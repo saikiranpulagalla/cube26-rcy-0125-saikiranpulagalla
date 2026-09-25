@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cube-recovery-manager"
+version = "0.1.0"
+description = "CUBE Recovery Manager v0.1 safe ingestion foundation"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "alembic==1.14.1",
+  "fastapi==0.115.8",
+  "httpx==0.28.1",
+  "psycopg[binary]==3.2.4",
+  "pydantic==2.10.6",
+  "pydantic-settings==2.7.1",
+  "python-multipart==0.0.20",
+  "sqlalchemy==2.0.38",
+  "typer==0.15.1",
+  "uvicorn[standard]==0.34.0",
+]
+
+[dependency-groups]
+dev = [
+  "mypy==1.15.0",
+  "pytest==8.3.4",
+  "pytest-asyncio==0.25.3",
+  "ruff==0.9.5",
+]
+
+[project.scripts]
+recovery = "recovery_manager.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/recovery_manager"]
+
+[project.optional-dependencies]
+dev = [
+  "mypy==1.15.0",
+  "pytest==8.3.4",
+  "pytest-asyncio==0.25.3",
+  "ruff==0.9.5",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+  "postgres: requires an isolated PostgreSQL database",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_configs = true
+plugins = ["pydantic.mypy"]
