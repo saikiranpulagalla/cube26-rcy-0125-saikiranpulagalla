@@ -7,6 +7,7 @@ from uuid import UUID
 import typer
 from sqlalchemy.orm import Session, sessionmaker
 
+from recovery_manager.canonical import canonicalize_fixture
 from recovery_manager.config import Settings, get_settings
 from recovery_manager.db import (
     assert_runtime_ready,
@@ -122,6 +123,14 @@ def fixture_load(file: Path) -> None:
     settings, factory = _dependencies()
     results = load_known_fixture(factory, settings, file)
     typer.echo(f"loaded_rows={len(results)}")
+
+
+@app.command("canonicalize-fixture")
+def canonicalize_fixture_command(file: Path) -> None:
+    """Persist allowlisted fixture rows as deterministic v0.2 canonical records."""
+    settings, factory = _dependencies()
+    inserted = canonicalize_fixture(factory, settings, file)
+    typer.echo(f"canonical_records_inserted={inserted}")
 
 
 @app.command()

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from recovery_manager.config import Settings
 
-EXPECTED_MIGRATION_HEAD = "0003_v01_readiness"
+EXPECTED_MIGRATION_HEAD = "0005_v02_quantity"
 
 
 def make_engine(settings: Settings, *, worker: bool = False) -> Engine:

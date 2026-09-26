@@ -1,4 +1,4 @@
-# Recovery Manager architecture — v0.1
+# Recovery Manager architecture — v0.2
 
 This document records the Astra-approved Plan V2 boundary for the implemented v0.1 foundation. It does not claim that Recovery logic, official evidence-contract compatibility, or policy-backed claims exist.
 
@@ -12,7 +12,10 @@ This document records the Astra-approved Plan V2 boundary for the implemented v0
 | Claim/export | `DISABLED` |
 | Recovery UI | `DISABLED` |
 
-v0.1 can safely accept, preserve, schedule and inspect tenant-owned input. It does not normalize financial events or issue business assessments.
+v0.2 can safely accept, preserve, schedule and inspect tenant-owned input. It adds lossless
+canonical source versions, financial-event direction/money/time metadata, and evidence-record
+coverage metadata. It does not evaluate policy, evidence admissibility, entitlement, settlement,
+or issue business assessments.
 
 ## Trust boundary
 
@@ -61,3 +64,20 @@ The official evidence contract, domain brief, authoritative recovery policy and 
 ## Future constraints frozen now
 
 Later versions must retain raw/source versioning, tenant-wide decision revisions, immutable machine assessments, obligation-level settlement allocation, conservative quantity coverage, evidence admissibility, retrieval completeness and snapshot freshness. No later work may treat source amount as recoverable residual or let an AI citation establish a financial fact.
+
+## Canonical sources, time and coverage
+
+Each allowlisted organizer CSV row becomes a tenant-scoped `SourceRecordVersion`, keyed by its opaque
+source identifier and content hash. The original row envelope remains preserved. A changed payload is a
+new source version; a replay of identical content is idempotent. No suffix or fuzzy identifier matching
+exists.
+
+The fee report adapter produces `FinancialEvent` records with strict fixed-point USD parsing, explicit
+`DEBIT`/`CREDIT`/`ADJUSTMENT` direction, source posting time and `DATE` precision. It never treats
+posting time as incident time. Receiving, prep, pack and returns adapters produce `EvidenceRecord`
+metadata with captured observation time and conservative coverage. Only receiving has a known quantity;
+other fixture coverage stays unknown rather than being added across potentially overlapping records.
+
+The `canonicalize-fixture` command remains a demo-only allowlisted loader. Its reconciliation gate
+requires 61 fee, 100 receiving, 62 prep, 29 pack and 24 returns rows. Synthetic files remain neither
+policy nor recovery ground truth.

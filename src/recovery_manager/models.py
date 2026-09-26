@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 from uuid import UUID, uuid4
 
@@ -11,6 +12,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Integer,
     LargeBinary,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -176,3 +178,95 @@ class AuditEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class SourceRecordVersion(Base):
+    __tablename__ = "source_record_version"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "raw_envelope_id"],
+            ["raw_envelope.org_id", "raw_envelope.id"],
+            name="fk_source_record_raw_envelope_tenant",
+        ),
+        UniqueConstraint(
+            "org_id", "source_kind", "source_record_id", "content_sha256",
+            name="uq_source_record_version_content",
+        ),
+        UniqueConstraint("org_id", "id", name="uq_source_record_version_org_id"),
+        CheckConstraint("btrim(org_id) <> ''", name="ck_source_record_version_org_nonempty"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    source_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_record_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    raw_envelope_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    row_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    declared_org_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    payload: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
+    source_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class FinancialEvent(Base):
+    __tablename__ = "financial_event"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "source_record_version_id"],
+            ["source_record_version.org_id", "source_record_version.id"],
+            name="fk_financial_event_source_version_tenant",
+        ),
+        UniqueConstraint("org_id", "source_record_version_id", name="uq_financial_event_source_version"),
+        UniqueConstraint("org_id", "id", name="uq_financial_event_org_id"),
+        CheckConstraint("btrim(org_id) <> ''", name="ck_financial_event_org_nonempty"),
+        CheckConstraint("direction IN ('DEBIT', 'CREDIT', 'ADJUSTMENT')", name="ck_financial_event_direction"),
+        CheckConstraint("currency ~ '^[A-Z]{3}$'", name="ck_financial_event_currency"),
+        CheckConstraint("quantity IS NULL OR quantity >= 0", name="ck_financial_event_quantity"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    source_record_version_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    direction: Mapped[str] = mapped_column(String(16), nullable=False)
+    amount_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    posting_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    posting_time_precision: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    incident_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    incident_time_precision: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    business_references: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False)
+    normalized_fields: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
+
+
+class EvidenceRecord(Base):
+    __tablename__ = "evidence_record"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "source_record_version_id"],
+            ["source_record_version.org_id", "source_record_version.id"],
+            name="fk_evidence_record_source_version_tenant",
+        ),
+        UniqueConstraint("org_id", "source_record_version_id", name="uq_evidence_record_source_version"),
+        UniqueConstraint("org_id", "id", name="uq_evidence_record_org_id"),
+        CheckConstraint("btrim(org_id) <> ''", name="ck_evidence_record_org_nonempty"),
+        CheckConstraint(
+            "coverage_quantity IS NULL OR coverage_quantity >= 0",
+            name="ck_evidence_record_coverage_quantity",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    source_record_version_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    evidence_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    observed_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    observed_time_precision: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    coverage_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    coverage_scope: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False)
+    normalized_fields: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
