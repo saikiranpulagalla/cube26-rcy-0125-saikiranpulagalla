@@ -189,7 +189,10 @@ class SourceRecordVersion(Base):
             name="fk_source_record_raw_envelope_tenant",
         ),
         UniqueConstraint(
-            "org_id", "source_kind", "source_record_id", "content_sha256",
+            "org_id",
+            "source_kind",
+            "source_record_id",
+            "content_sha256",
             name="uq_source_record_version_content",
         ),
         UniqueConstraint("org_id", "id", name="uq_source_record_version_org_id"),
@@ -205,8 +208,12 @@ class SourceRecordVersion(Base):
     row_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     declared_org_id: Mapped[str] = mapped_column(String(128), nullable=False)
     payload: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
-    source_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    source_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    source_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -220,10 +227,14 @@ class FinancialEvent(Base):
             ["source_record_version.org_id", "source_record_version.id"],
             name="fk_financial_event_source_version_tenant",
         ),
-        UniqueConstraint("org_id", "source_record_version_id", name="uq_financial_event_source_version"),
+        UniqueConstraint(
+            "org_id", "source_record_version_id", name="uq_financial_event_source_version"
+        ),
         UniqueConstraint("org_id", "id", name="uq_financial_event_org_id"),
         CheckConstraint("btrim(org_id) <> ''", name="ck_financial_event_org_nonempty"),
-        CheckConstraint("direction IN ('DEBIT', 'CREDIT', 'ADJUSTMENT')", name="ck_financial_event_direction"),
+        CheckConstraint(
+            "direction IN ('DEBIT', 'CREDIT', 'ADJUSTMENT')", name="ck_financial_event_direction"
+        ),
         CheckConstraint("currency ~ '^[A-Z]{3}$'", name="ck_financial_event_currency"),
         CheckConstraint("quantity IS NULL OR quantity >= 0", name="ck_financial_event_quantity"),
     )
@@ -252,7 +263,9 @@ class EvidenceRecord(Base):
             ["source_record_version.org_id", "source_record_version.id"],
             name="fk_evidence_record_source_version_tenant",
         ),
-        UniqueConstraint("org_id", "source_record_version_id", name="uq_evidence_record_source_version"),
+        UniqueConstraint(
+            "org_id", "source_record_version_id", name="uq_evidence_record_source_version"
+        ),
         UniqueConstraint("org_id", "id", name="uq_evidence_record_org_id"),
         CheckConstraint("btrim(org_id) <> ''", name="ck_evidence_record_org_nonempty"),
         CheckConstraint(
@@ -299,7 +312,9 @@ class EconomicObligation(Base):
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     business_instance: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False)
     quantity_scope: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class AmountDerivation(Base):
@@ -310,12 +325,23 @@ class AmountDerivation(Base):
             ["economic_obligation.org_id", "economic_obligation.id"],
             name="fk_amount_derivation_obligation_tenant",
         ),
-        UniqueConstraint("org_id", "obligation_id", "derivation_version", name="uq_amount_derivation_version"),
+        UniqueConstraint(
+            "org_id", "obligation_id", "derivation_version", name="uq_amount_derivation_version"
+        ),
         CheckConstraint("btrim(org_id) <> ''", name="ck_amount_derivation_org_nonempty"),
         CheckConstraint("currency ~ '^[A-Z]{3}$'", name="ck_amount_derivation_currency"),
-        CheckConstraint("observed_amount_minor IS NULL OR observed_amount_minor >= 0", name="ck_amount_derivation_observed_nonnegative"),
-        CheckConstraint("expected_amount_minor IS NULL OR expected_amount_minor >= 0", name="ck_amount_derivation_expected_nonnegative"),
-        CheckConstraint("justified_entitlement_minor IS NULL OR justified_entitlement_minor >= 0", name="ck_amount_derivation_entitlement_nonnegative"),
+        CheckConstraint(
+            "observed_amount_minor IS NULL OR observed_amount_minor >= 0",
+            name="ck_amount_derivation_observed_nonnegative",
+        ),
+        CheckConstraint(
+            "expected_amount_minor IS NULL OR expected_amount_minor >= 0",
+            name="ck_amount_derivation_expected_nonnegative",
+        ),
+        CheckConstraint(
+            "justified_entitlement_minor IS NULL OR justified_entitlement_minor >= 0",
+            name="ck_amount_derivation_entitlement_nonnegative",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -329,7 +355,9 @@ class AmountDerivation(Base):
     rounding_rule: Mapped[str] = mapped_column(String(128), nullable=False)
     basis_class: Mapped[str] = mapped_column(String(32), nullable=False)
     source_basis: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class SettlementAllocation(Base):
@@ -355,7 +383,9 @@ class SettlementAllocation(Base):
     obligation_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     allocated_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
     rationale: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class SettlementReversal(Base):
@@ -374,7 +404,9 @@ class SettlementReversal(Base):
     allocation_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     reversed_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class ClaimPursuit(Base):
@@ -396,7 +428,9 @@ class ClaimPursuit(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     declared_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class PursuitAllocation(Base):
@@ -421,4 +455,96 @@ class PursuitAllocation(Base):
     pursuit_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     obligation_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     allocated_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class EvidenceAssertion(Base):
+    """A mechanically checkable statement about a source field, not an AI interpretation."""
+
+    __tablename__ = "evidence_assertion"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "evidence_record_id"],
+            ["evidence_record.org_id", "evidence_record.id"],
+            name="fk_assertion_evidence_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "source_record_version_id"],
+            ["source_record_version.org_id", "source_record_version.id"],
+            name="fk_assertion_source_tenant",
+        ),
+        UniqueConstraint("org_id", "id", name="uq_evidence_assertion_org_id"),
+        CheckConstraint("btrim(org_id) <> ''", name="ck_evidence_assertion_org_nonempty"),
+        CheckConstraint(
+            "polarity IN ('SUPPORTS', 'CONTRADICTS')", name="ck_evidence_assertion_polarity"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    evidence_record_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    source_record_version_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    proposition_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    subject_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    polarity: Mapped[str] = mapped_column(String(16), nullable=False)
+    fact_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    asserted_value: Mapped[object] = mapped_column(JSONB, nullable=False)
+    scope: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
+    decisive: Mapped[bool] = mapped_column(nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class EvidenceLifecycleEvent(Base):
+    __tablename__ = "evidence_lifecycle_event"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "assertion_id"],
+            ["evidence_assertion.org_id", "evidence_assertion.id"],
+            name="fk_evidence_lifecycle_assertion_tenant",
+        ),
+        CheckConstraint("btrim(org_id) <> ''", name="ck_evidence_lifecycle_org_nonempty"),
+        CheckConstraint(
+            "state IN ('AVAILABLE', 'REVOKED', 'SUPERSEDED')", name="ck_evidence_lifecycle_state"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    assertion_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class PolicySourceVersion(Base):
+    __tablename__ = "policy_source_version"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id", "policy_key", "content_sha256", name="uq_policy_source_version_content"
+        ),
+        UniqueConstraint("org_id", "id", name="uq_policy_source_version_org_id"),
+        CheckConstraint("btrim(org_id) <> ''", name="ck_policy_source_org_nonempty"),
+        CheckConstraint(
+            "authority_class IN ('OFFICIAL', 'SYNTHETIC', 'UNVERIFIED')",
+            name="ck_policy_source_authority",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    policy_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    authority_class: Mapped[str] = mapped_column(String(16), nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    effective_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    applicability: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
+    raw_text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

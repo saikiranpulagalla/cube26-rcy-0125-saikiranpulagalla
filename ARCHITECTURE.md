@@ -111,3 +111,20 @@ the declared pursuit amount. These controls prevent netting merely because recor
 All v0.3 tables are tenant-owned, RLS-enabled and RLS-forced. Ledger guards execute with the owner only
 to obtain row locks required for aggregation, while `FORCE ROW LEVEL SECURITY` continues to bind their
 queries to the caller's transaction-local tenant context.
+
+## v0.4 evidence proof and policy provenance
+
+An `EvidenceAssertion` names a proposition and subject, cites both an evidence record and an exact source
+version, and gives a bounded dotted JSON fact path plus asserted JSON value. `prove_assertion` reads the
+stored source payload and requires equality; a real evidence identifier alone cannot establish the claimed
+fact. Evidence lifecycle is append-only, with a latest `REVOKED` or `SUPERSEDED` event making the assertion
+non-current.
+
+Retrieval is deterministic by assertion creation time and identifier. It retrieves one extra candidate to
+prove whether the requested limit was complete and exposes support/contradiction conflicts in the same
+subject/proposition set. Any future automatic recovery action must treat an incomplete retrieval, conflict,
+failed proof, unknown coverage or unavailable applicable policy as non-automatic review.
+
+`PolicySourceVersion` stores versioned provenance, effective period and explicit applicability metadata, but
+does not interpret a policy. The repository contains no official policy source; therefore official evidence
+compatibility and recovery-policy capability remain `DISABLED`.
