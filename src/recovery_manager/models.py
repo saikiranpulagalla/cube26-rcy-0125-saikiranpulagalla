@@ -270,3 +270,155 @@ class EvidenceRecord(Base):
     coverage_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     coverage_scope: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False)
     normalized_fields: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
+
+
+class EconomicObligation(Base):
+    __tablename__ = "economic_obligation"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "financial_event_id"],
+            ["financial_event.org_id", "financial_event.id"],
+            name="fk_obligation_financial_event_tenant",
+        ),
+        UniqueConstraint("org_id", "economic_key", name="uq_obligation_economic_key"),
+        UniqueConstraint("org_id", "id", name="uq_obligation_org_id"),
+        CheckConstraint("btrim(org_id) <> ''", name="ck_obligation_org_nonempty"),
+        CheckConstraint(
+            "recovery_basis IN ('INVALID_FEE', 'ELIGIBLE_LOSS_DAMAGE', 'DUPLICATE_BILLING', "
+            "'UNDER_REIMBURSEMENT', 'OTHER_SUPPORTED', 'UNKNOWN')",
+            name="ck_obligation_recovery_basis",
+        ),
+        CheckConstraint("currency ~ '^[A-Z]{3}$'", name="ck_obligation_currency"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    economic_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    financial_event_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    recovery_basis: Mapped[str] = mapped_column(String(32), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    business_instance: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False)
+    quantity_scope: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class AmountDerivation(Base):
+    __tablename__ = "amount_derivation"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "obligation_id"],
+            ["economic_obligation.org_id", "economic_obligation.id"],
+            name="fk_amount_derivation_obligation_tenant",
+        ),
+        UniqueConstraint("org_id", "obligation_id", "derivation_version", name="uq_amount_derivation_version"),
+        CheckConstraint("btrim(org_id) <> ''", name="ck_amount_derivation_org_nonempty"),
+        CheckConstraint("currency ~ '^[A-Z]{3}$'", name="ck_amount_derivation_currency"),
+        CheckConstraint("observed_amount_minor IS NULL OR observed_amount_minor >= 0", name="ck_amount_derivation_observed_nonnegative"),
+        CheckConstraint("expected_amount_minor IS NULL OR expected_amount_minor >= 0", name="ck_amount_derivation_expected_nonnegative"),
+        CheckConstraint("justified_entitlement_minor IS NULL OR justified_entitlement_minor >= 0", name="ck_amount_derivation_entitlement_nonnegative"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    obligation_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    derivation_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    observed_amount_minor: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    expected_amount_minor: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    justified_entitlement_minor: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    rounding_rule: Mapped[str] = mapped_column(String(128), nullable=False)
+    basis_class: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_basis: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class SettlementAllocation(Base):
+    __tablename__ = "settlement_allocation"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "credit_event_id"],
+            ["financial_event.org_id", "financial_event.id"],
+            name="fk_settlement_credit_event_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "obligation_id"],
+            ["economic_obligation.org_id", "economic_obligation.id"],
+            name="fk_settlement_obligation_tenant",
+        ),
+        UniqueConstraint("org_id", "id", name="uq_settlement_allocation_org_id"),
+        CheckConstraint("allocated_minor > 0", name="ck_settlement_allocation_positive"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    credit_event_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    obligation_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    allocated_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class SettlementReversal(Base):
+    __tablename__ = "settlement_reversal"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "allocation_id"],
+            ["settlement_allocation.org_id", "settlement_allocation.id"],
+            name="fk_settlement_reversal_allocation_tenant",
+        ),
+        CheckConstraint("reversed_minor > 0", name="ck_settlement_reversal_positive"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    allocation_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    reversed_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ClaimPursuit(Base):
+    __tablename__ = "claim_pursuit"
+    __table_args__ = (
+        UniqueConstraint("org_id", "id", name="uq_claim_pursuit_org_id"),
+        CheckConstraint("btrim(org_id) <> ''", name="ck_claim_pursuit_org_nonempty"),
+        CheckConstraint("currency ~ '^[A-Z]{3}$'", name="ck_claim_pursuit_currency"),
+        CheckConstraint("declared_minor > 0", name="ck_claim_pursuit_positive"),
+        CheckConstraint(
+            "status IN ('RECOMMENDED', 'EXPORTED', 'SUBMITTED', 'PENDING', 'RESOLVED', 'REJECTED', 'WITHDRAWN')",
+            name="ck_claim_pursuit_status",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    external_reference: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    declared_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class PursuitAllocation(Base):
+    __tablename__ = "pursuit_allocation"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "pursuit_id"],
+            ["claim_pursuit.org_id", "claim_pursuit.id"],
+            name="fk_pursuit_allocation_pursuit_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "obligation_id"],
+            ["economic_obligation.org_id", "economic_obligation.id"],
+            name="fk_pursuit_allocation_obligation_tenant",
+        ),
+        CheckConstraint("allocated_minor > 0", name="ck_pursuit_allocation_positive"),
+        CheckConstraint("btrim(org_id) <> ''", name="ck_pursuit_allocation_org_nonempty"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    pursuit_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    obligation_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    allocated_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

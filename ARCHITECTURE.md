@@ -1,8 +1,8 @@
-# Recovery Manager architecture — v0.2
+# Recovery Manager architecture — v0.3
 
 This document records the Astra-approved Plan V2 boundary for the implemented v0.1 foundation. It does not claim that Recovery logic, official evidence-contract compatibility, or policy-backed claims exist.
 
-## v0.1 capability boundary
+## Capability boundary through v0.3
 
 | Capability | v0.1 state |
 |---|---|
@@ -81,3 +81,33 @@ other fixture coverage stays unknown rather than being added across potentially 
 The `canonicalize-fixture` command remains a demo-only allowlisted loader. Its reconciliation gate
 requires 61 fee, 100 receiving, 62 prep, 29 pack and 24 returns rows. Synthetic files remain neither
 policy nor recovery ground truth.
+
+## v0.3 economic ledger, still without Recovery decisions
+
+`EconomicObligation` is the stable, tenant-scoped identity of a potential economic opportunity. It is
+unique by tenant `economic_key`, carries a finite *candidate basis* taxonomy, a currency and explicit
+business-instance/quantity-scope metadata. The taxonomy does not apply organizer policy or assert that
+any case is recoverable. `UNKNOWN` is always available.
+
+`AmountDerivation` records observed, expected and justified amounts separately, in integer minor units,
+with a version, rounding rule and source-basis pointer. An absent justified entitlement remains unknown;
+it is never treated as zero. `residual_for_obligation` can only calculate an accounting residual:
+
+```text
+justified entitlement − net allocated settlement − active pursuit allocation
+```
+
+It returns an unknown residual if the justified entitlement is missing. It does not recommend a claim,
+apply policy, assess evidence, or expose a recovery endpoint.
+
+Credits/reimbursements enter through `SettlementAllocation`, which must reference one tenant-matching
+`CREDIT` financial event and one tenant-matching obligation in the same currency. PostgreSQL triggers
+serialize on the source credit and forbid aggregate allocation above its amount. Reversals are explicit
+and cannot exceed their allocation. A `ClaimPursuit` is a record of known recommendation/export/submission
+history; it is not a filing integration. Its finite transition guard prevents a terminal pursuit returning
+to active status. A pursuit allocation is currency-matched, scoped to an obligation, and cannot exceed
+the declared pursuit amount. These controls prevent netting merely because records share a unit.
+
+All v0.3 tables are tenant-owned, RLS-enabled and RLS-forced. Ledger guards execute with the owner only
+to obtain row locks required for aggregation, while `FORCE ROW LEVEL SECURITY` continues to bind their
+queries to the caller's transaction-local tenant context.

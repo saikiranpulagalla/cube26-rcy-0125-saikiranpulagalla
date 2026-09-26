@@ -52,7 +52,8 @@ def runtime_factory(settings: Settings, postgres_available: bool) -> sessionmake
     with owner.begin() as connection:
         connection.execute(
             text(
-                "TRUNCATE evidence_record, financial_event, source_record_version, audit_event, "
+                "TRUNCATE pursuit_allocation, claim_pursuit, settlement_reversal, settlement_allocation, "
+                "amount_derivation, economic_obligation, evidence_record, financial_event, source_record_version, audit_event, "
                 "work_attempt, work_intent, raw_envelope, tenant_state CASCADE"
             )
         )

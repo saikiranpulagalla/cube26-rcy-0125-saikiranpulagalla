@@ -12,7 +12,7 @@
 
 If a required implementation choice changes entitlement, tenant, durability, provenance, capability restriction or financial semantics, Terra stops with `ARCHITECTURE/REQUIREMENT BLOCKER`.
 
-## P0 invariants carried by v0.1
+## P0 invariants carried through v0.3
 
 - No cross-tenant read, write, reference, raw-object or audit/work-history leak.
 - No accepted input without exact durable raw bytes and durable work intent.
@@ -22,6 +22,9 @@ If a required implementation choice changes entitlement, tenant, durability, pro
 - No recovery, policy, AI or claim capability is active.
 - No synthetic organizer data is represented as authoritative recovery policy.
 - No committed secrets or modified organizer starter resources.
+- Every settlement and pursuit amount is allocated to a tenant-matching economic obligation; source
+  credits, reversals and active pursuits cannot be silently netted or double allocated.
+- A missing justified entitlement remains unknown and cannot become a recovery recommendation.
 
 ## Requirement traceability
 
