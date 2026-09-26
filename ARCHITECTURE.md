@@ -34,13 +34,19 @@ One transaction creates the raw envelope, its queued work intent, a receipt audi
 
 ## PostgreSQL isolation
 
-The migration creates `recovery_owner`-owned protected tables and grants the restricted `recovery_app` runtime role CRUD access. Each business table has `org_id`, RLS is enabled and forced, and the policy uses transaction-local `app.current_org_id`. Composite `(org_id, id)` foreign keys prevent a work intent or attempt from referring across tenants.
+The migration creates `recovery_owner`-owned protected tables. `recovery_app` can append raw envelopes,
+work intents and audit events but cannot rewrite or delete them. `recovery_worker` has a separate credential
+and only receives constrained lifecycle-column permissions. Database constraints and triggers reject invalid
+tenant identifiers, revision decrements, raw/audit rewrites, and illegal work transitions. Each business table
+has `org_id`, RLS is enabled and forced, and the policy uses transaction-local `app.current_org_id` with empty
+context treated as no tenant. Composite `(org_id, id)` foreign keys prevent a work intent or attempt from
+referring across tenants.
 
 The application checks at startup/readiness that its runtime role is neither superuser, `BYPASSRLS`, nor owner of protected tables.
 
 ## Work recovery
 
-The polling worker enumerates only configured trusted tenants. It acquires jobs through `SELECT … FOR UPDATE SKIP LOCKED`, records an attempt and leases work with a token. Completion requires that exact unexpired token. Expired work becomes recoverable; a former holder cannot complete it later.
+The polling worker enumerates only configured trusted tenants. It acquires jobs through `SELECT … FOR UPDATE SKIP LOCKED`, records an attempt and leases work with a token. Completion and failure validate that token and the database wall clock after acquiring the final row lock. Expired work becomes recoverable with a `LEASE_EXPIRED` historical outcome; a former holder cannot complete or mutate it later.
 
 There is no network, AI, policy or financial work in v0.1. Successful worker completion means only `COMPLETED_STRUCTURAL_PROCESSING`.
 

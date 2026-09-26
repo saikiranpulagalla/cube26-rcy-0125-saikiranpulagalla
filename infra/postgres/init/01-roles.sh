@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+: "${RECOVERY_OWNER_DB_PASSWORD:?RECOVERY_OWNER_DB_PASSWORD is required}"
+: "${RECOVERY_APP_DB_PASSWORD:?RECOVERY_APP_DB_PASSWORD is required}"
+: "${RECOVERY_WORKER_DB_PASSWORD:?RECOVERY_WORKER_DB_PASSWORD is required}"
+
+psql --set=ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
+  --set=owner_password="$RECOVERY_OWNER_DB_PASSWORD" \
+  --set=app_password="$RECOVERY_APP_DB_PASSWORD" \
+  --set=worker_password="$RECOVERY_WORKER_DB_PASSWORD" <<'SQL'
+CREATE ROLE recovery_owner LOGIN PASSWORD :'owner_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOINHERIT;
+CREATE ROLE recovery_app LOGIN PASSWORD :'app_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOINHERIT;
+CREATE ROLE recovery_worker LOGIN PASSWORD :'worker_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOINHERIT;
+GRANT CONNECT ON DATABASE recovery TO recovery_owner, recovery_app, recovery_worker;
+GRANT USAGE ON SCHEMA public TO recovery_owner, recovery_app, recovery_worker;
+GRANT CREATE ON SCHEMA public TO recovery_owner;
+SQL

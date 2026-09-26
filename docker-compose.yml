@@ -4,9 +4,12 @@ services:
     environment:
       POSTGRES_DB: recovery
       POSTGRES_USER: recovery_admin
-      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_PASSWORD: ${RECOVERY_ADMIN_DB_PASSWORD:?set RECOVERY_ADMIN_DB_PASSWORD in .env}
+      RECOVERY_OWNER_DB_PASSWORD: ${RECOVERY_OWNER_DB_PASSWORD:?set RECOVERY_OWNER_DB_PASSWORD in .env}
+      RECOVERY_APP_DB_PASSWORD: ${RECOVERY_APP_DB_PASSWORD:?set RECOVERY_APP_DB_PASSWORD in .env}
+      RECOVERY_WORKER_DB_PASSWORD: ${RECOVERY_WORKER_DB_PASSWORD:?set RECOVERY_WORKER_DB_PASSWORD in .env}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U recovery_admin -d recovery"]
       interval: 2s

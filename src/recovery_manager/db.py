@@ -3,14 +3,18 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from sqlalchemy import Engine, create_engine, text
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from recovery_manager.config import Settings
 
+EXPECTED_MIGRATION_HEAD = "0003_v01_readiness"
 
-def make_engine(settings: Settings) -> Engine:
-    return create_engine(settings.database_url, pool_pre_ping=True, future=True)
+
+def make_engine(settings: Settings, *, worker: bool = False) -> Engine:
+    url = settings.worker_database_url if worker else settings.database_url
+    return create_engine(url, pool_pre_ping=True, future=True)
 
 
 def make_session_factory(engine: Engine) -> sessionmaker[Session]:
@@ -19,6 +23,8 @@ def make_session_factory(engine: Engine) -> sessionmaker[Session]:
 
 def set_local_tenant(session: Session, org_id: str) -> None:
     # Must be called inside every transaction that accesses tenant tables.
+    if not org_id or org_id != org_id.strip():
+        raise ValueError("Tenant context must be a non-empty normalized identifier")
     session.execute(
         text("SELECT set_config('app.current_org_id', :org_id, true)"), {"org_id": org_id}
     )
@@ -32,7 +38,7 @@ def tenant_transaction(factory: sessionmaker[Session], org_id: str) -> Iterator[
             yield session
 
 
-def assert_safe_runtime_role(engine: Engine) -> None:
+def assert_safe_runtime_role(engine: Engine, *, required_role: str | None = None) -> None:
     with engine.connect() as connection:
         row = (
             connection.execute(
@@ -59,3 +65,23 @@ def assert_safe_runtime_role(engine: Engine) -> None:
         )
         if (current_user := str(row["current_user"])) and current_user in owners:
             raise RuntimeError("Unsafe runtime database role: protected-table owner is forbidden")
+        if required_role is not None and row["current_user"] != required_role:
+            raise RuntimeError("Unsafe runtime database role: unexpected role")
+
+
+def assert_runtime_ready(engine: Engine, settings: Settings, *, required_role: str) -> None:
+    settings.principals()
+    assert_safe_runtime_role(engine, required_role=required_role)
+    with engine.connect() as connection:
+        revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
+        if revision != EXPECTED_MIGRATION_HEAD:
+            raise RuntimeError("Database migration is not current")
+        protected = connection.execute(
+            text(
+                "SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity "
+                "FROM pg_class c WHERE c.relkind = 'r' AND c.relname IN "
+                "('tenant_state', 'raw_envelope', 'work_intent', 'work_attempt', 'audit_event')"
+            )
+        ).mappings().all()
+        if len(protected) != 5 or any(not row["relrowsecurity"] or not row["relforcerowsecurity"] for row in protected):
+            raise RuntimeError("Protected table RLS is incomplete")

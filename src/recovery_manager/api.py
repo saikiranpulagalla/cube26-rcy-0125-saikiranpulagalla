@@ -4,16 +4,17 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
-from sqlalchemy import select, text
-from sqlalchemy.exc import OperationalError
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from sqlalchemy import select
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from recovery_manager.auth import authenticate_development_credential
 from recovery_manager.capabilities import V01_CAPABILITIES
 from recovery_manager.config import Principal, Settings, get_settings
 from recovery_manager.db import (
-    assert_safe_runtime_role,
+    assert_runtime_ready,
     make_engine,
     make_session_factory,
     set_local_tenant,
@@ -28,11 +29,13 @@ def create_app(
     current_settings = settings or get_settings()
     engine = None if factory is not None else make_engine(current_settings)
     current_factory = factory or make_session_factory(engine)  # type: ignore[arg-type]
+    bound_engine = engine or current_factory.kw.get("bind")
+    if not isinstance(bound_engine, Engine):
+        raise RuntimeError("Application session factory must be bound to an Engine")
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        if engine is not None:
-            assert_safe_runtime_role(engine)
+        assert_runtime_ready(bound_engine, current_settings, required_role="recovery_app")
         yield
 
     app = FastAPI(title="Recovery Manager v0.1", lifespan=lifespan)
@@ -40,9 +43,12 @@ def create_app(
     app.state.session_factory = current_factory
 
     def principal_dependency(
-        x_development_credential: str | None = Header(default=None),
+        request: Request,
     ) -> Principal:
-        return authenticate_development_credential(x_development_credential, current_settings)
+        credentials = request.headers.getlist("x-development-credential")
+        if len(credentials) != 1:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credential")
+        return authenticate_development_credential(credentials[0], current_settings)
 
     @app.get("/healthz")
     def health() -> dict[str, str]:
@@ -51,14 +57,11 @@ def create_app(
     @app.get("/readyz")
     def readiness() -> dict[str, object]:
         try:
-            if engine is not None:
-                assert_safe_runtime_role(engine)
-            with current_factory() as session:
-                session.execute(text("SELECT 1"))
+            assert_runtime_ready(bound_engine, current_settings, required_role="recovery_app")
             return {"status": "ready", "capabilities": V01_CAPABILITIES}
-        except (OperationalError, RuntimeError) as exc:
+        except (SQLAlchemyError, RuntimeError, ValueError) as exc:
             raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Service is not ready"
             ) from exc
 
     @app.post("/v1/imports", status_code=status.HTTP_202_ACCEPTED)
@@ -66,14 +69,34 @@ def create_app(
         request: Request,
         response: Response,
         principal: Principal = Depends(principal_dependency),
-        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-        source_name: str | None = Header(default=None, alias="X-Source-Name"),
     ) -> dict[str, object]:
+        idempotency_values = request.headers.getlist("idempotency-key")
+        if len(idempotency_values) != 1:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Idempotency-Key is required")
+        idempotency_key = idempotency_values[0]
+        source_values = request.headers.getlist("x-source-name")
+        if len(source_values) > 1:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid source header")
+        source_name = source_values[0] if source_values else "http-input"
         if idempotency_key is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail="Idempotency-Key is required"
             )
-        raw = await request.body()
+        declared_length = request.headers.get("content-length")
+        if declared_length is not None:
+            try:
+                if int(declared_length) > current_settings.max_input_bytes:
+                    raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Input too large")
+            except ValueError as exc:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid Content-Length") from exc
+        parts: list[bytes] = []
+        total = 0
+        async for chunk in request.stream():
+            total += len(chunk)
+            if total > current_settings.max_input_bytes:
+                raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Input too large")
+            parts.append(chunk)
+        raw = b"".join(parts)
         content_type = request.headers.get("content-type", "application/octet-stream")
         try:
             with current_factory() as session, session.begin():
@@ -83,7 +106,7 @@ def create_app(
                     principal,
                     raw,
                     content_type,
-                    source_name or "http-input",
+                    source_name,
                     idempotency_key,
                     current_settings,
                 )
@@ -100,7 +123,7 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        except OperationalError as exc:
+        except SQLAlchemyError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database unavailable"
             ) from exc

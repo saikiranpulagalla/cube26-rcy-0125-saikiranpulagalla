@@ -14,28 +14,49 @@ jobs:
         env:
           POSTGRES_DB: recovery
           POSTGRES_USER: recovery_admin
-          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_PASSWORD: ci-admin-password-not-a-secret
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U recovery_admin -d recovery"
           --health-interval 2s --health-timeout 3s --health-retries 30
     env:
-      RECOVERY_DATABASE_URL: postgresql+psycopg://recovery_app@localhost:5432/recovery
-      RECOVERY_MIGRATION_DATABASE_URL: postgresql+psycopg://recovery_owner@localhost:5432/recovery
+      PGPASSWORD: ci-admin-password-not-a-secret
+      POSTGRES_USER: recovery_admin
+      POSTGRES_DB: recovery
+      RECOVERY_OWNER_DB_PASSWORD: ci-owner-password-not-a-secret
+      RECOVERY_APP_DB_PASSWORD: ci-app-password-not-a-secret
+      RECOVERY_WORKER_DB_PASSWORD: ci-worker-password-not-a-secret
+      RECOVERY_DATABASE_URL: postgresql+psycopg://recovery_app:ci-app-password-not-a-secret@localhost:5432/recovery
+      RECOVERY_MIGRATION_DATABASE_URL: postgresql+psycopg://recovery_owner:ci-owner-password-not-a-secret@localhost:5432/recovery
+      RECOVERY_WORKER_DATABASE_URL: postgresql+psycopg://recovery_worker:ci-worker-password-not-a-secret@localhost:5432/recovery
+      RECOVERY_DEVELOPMENT_MODE: "true"
+      RECOVERY_DEV_CREDENTIALS: '{"alpha-local-token":{"org_id":"org_demo_alpha","actor_id":"operator_alpha","role":"operator"},"bravo-local-token":{"org_id":"org_demo_bravo","actor_id":"operator_bravo","role":"operator"}}'
+      RECOVERY_REQUIRE_POSTGRES: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Install runtime roles
-        run: psql postgresql://recovery_admin@localhost:5432/recovery -f infra/postgres/init/01-roles.sql
+        run: sh infra/postgres/init/01-roles.sh
       - name: Install
-        run: python -m pip install -e . && python -m pip install pytest==8.3.4 ruff==0.9.5 mypy==1.15.0
+        run: python -m pip install -e ".[dev]"
       - name: Migrate
         run: alembic upgrade head
+      - name: Migration drift check
+        run: alembic check
       - name: Lint
         run: ruff check src tests alembic
       - name: Type check
         run: mypy src
       - name: Tests
         run: pytest -q
+      - name: CLI smoke
+        run: |
+          recovery --help
+          recovery ingest --help
+          recovery status --help
+          recovery worker-once --help
+          recovery worker-poll --help
+          recovery fixture-load --help
+          recovery readiness --help

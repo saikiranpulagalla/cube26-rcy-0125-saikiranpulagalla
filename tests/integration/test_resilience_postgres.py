@@ -6,8 +6,8 @@ from threading import Barrier
 
 import pytest
 from sqlalchemy import delete, select, update
+from sqlalchemy.exc import ProgrammingError
 
-from recovery_manager.config import Settings
 from recovery_manager.db import set_local_tenant
 from recovery_manager.fixtures import load_known_fixture
 from recovery_manager.ingestion import accept_input
@@ -53,7 +53,7 @@ def test_fixture_loader_is_disabled_without_explicit_demo_mode(runtime_factory, 
 def test_allowlisted_fixture_loader_preserves_original_file_and_row_provenance(
     runtime_factory, settings
 ) -> None:
-    demo_settings = Settings(demo_fixtures_enabled=True)
+    demo_settings = settings.model_copy(update={"demo_fixtures_enabled": True})
     results = load_known_fixture(runtime_factory, demo_settings, Path("data/fee_report_sample.csv"))
     assert results
     with runtime_factory() as session, session.begin():
@@ -79,16 +79,18 @@ def test_rls_blocks_cross_tenant_update_and_delete(runtime_factory, alpha, bravo
             "bravo-mutation-key",
             settings,
         )
-    with runtime_factory() as session, session.begin():
-        set_local_tenant(session, alpha.org_id)
-        assert session.execute(
-            update(RawEnvelope)
-            .where(RawEnvelope.id == created.envelope_id)
-            .values(source_name="forbidden")
-        ).rowcount == 0
-        assert session.execute(
-            delete(RawEnvelope).where(RawEnvelope.id == created.envelope_id)
-        ).rowcount == 0
+    with pytest.raises(ProgrammingError):
+        with runtime_factory() as session, session.begin():
+            set_local_tenant(session, alpha.org_id)
+            session.execute(
+                update(RawEnvelope)
+                .where(RawEnvelope.id == created.envelope_id)
+                .values(source_name="forbidden")
+            )
+    with pytest.raises(ProgrammingError):
+        with runtime_factory() as session, session.begin():
+            set_local_tenant(session, alpha.org_id)
+            session.execute(delete(RawEnvelope).where(RawEnvelope.id == created.envelope_id))
     with runtime_factory() as session, session.begin():
         set_local_tenant(session, bravo.org_id)
         assert session.get(RawEnvelope, created.envelope_id) is not None

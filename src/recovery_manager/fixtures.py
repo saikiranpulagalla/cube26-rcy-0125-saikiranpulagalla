@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session, sessionmaker
 from recovery_manager.config import Principal, Settings
 from recovery_manager.db import set_local_tenant
 from recovery_manager.ingestion import AcceptanceResult, accept_input
-from recovery_manager.models import RawEnvelope
 
 # SHA-256 values are for exact organizer fixture files at the Astra-approved baseline.
 KNOWN_FIXTURE_HASHES = frozenset(
@@ -61,14 +60,12 @@ def load_known_fixture(
                 str(path),
                 f"fixture:{file_hash}:{row_number}",
                 settings,
+                fixture_provenance={
+                    "fixture": True,
+                    "original_file_sha256": file_hash,
+                    "original_row_number": row_number,
+                    "declared_org_id": declared_org,
+                },
             )
-            envelope = session.get(RawEnvelope, result.envelope_id)
-            assert envelope is not None
-            envelope.fixture_provenance = {
-                "fixture": True,
-                "original_file_sha256": file_hash,
-                "original_row_number": row_number,
-                "declared_org_id": declared_org,
-            }
             results.append(result)
     return results

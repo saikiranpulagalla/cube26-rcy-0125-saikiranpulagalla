@@ -22,6 +22,9 @@ def test_valid_csv_with_matching_declared_tenant_is_accepted() -> None:
         (b"org_id,value\norg_demo_alpha,1,extra\n", "surplus columns"),
         (b"org_id,org_id\norg_demo_alpha,org_demo_alpha\n", "duplicate headers"),
         (b"\xff\xfe", "UTF-8"),
+        (b'org_id,value\norg_demo_alpha,"unterminated\n', "structurally malformed"),
+        (b"org_id,value\norg_demo_alpha\n", "row length"),
+        (b"org_id,value\n,value\n", "empty org_id"),
     ],
 )
 def test_malformed_csv_is_quarantined(raw: bytes, reason: str) -> None:

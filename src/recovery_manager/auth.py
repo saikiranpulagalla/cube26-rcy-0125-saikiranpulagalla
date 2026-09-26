@@ -10,7 +10,7 @@ def authenticate_development_credential(
     settings: Settings | None = None,
 ) -> Principal:
     current = settings or get_settings()
-    if x_development_credential is None:
+    if x_development_credential is None or not x_development_credential.strip():
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing development credential"
         )

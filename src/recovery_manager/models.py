@@ -40,6 +40,10 @@ class ExecutionState(StrEnum):
 
 class TenantState(Base):
     __tablename__ = "tenant_state"
+    __table_args__ = (
+        CheckConstraint("btrim(org_id) <> ''", name="ck_tenant_state_org_nonempty"),
+        CheckConstraint("decision_revision >= 0", name="ck_tenant_revision_nonnegative"),
+    )
 
     org_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     decision_revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
@@ -57,6 +61,7 @@ class RawEnvelope(Base):
         UniqueConstraint("org_id", "idempotency_key", name="uq_raw_envelope_org_idempotency"),
         UniqueConstraint("org_id", "id", name="uq_raw_envelope_org_id"),
         CheckConstraint("octet_length(raw_bytes) > 0", name="ck_raw_envelope_nonempty"),
+        CheckConstraint("btrim(org_id) <> ''", name="ck_raw_envelope_org_nonempty"),
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -89,6 +94,18 @@ class WorkIntent(Base):
         UniqueConstraint("org_id", "envelope_id", name="uq_work_envelope_tenant"),
         UniqueConstraint("org_id", "id", name="uq_work_intent_org_id"),
         CheckConstraint("attempt_count >= 0", name="ck_work_attempt_nonnegative"),
+        CheckConstraint("btrim(org_id) <> ''", name="ck_work_intent_org_nonempty"),
+        CheckConstraint(
+            "state IN ('QUEUED', 'RUNNING', 'RETRYABLE_FAILURE', 'TERMINAL_FAILURE', 'COMPLETED')",
+            name="ck_work_state_known",
+        ),
+        CheckConstraint(
+            "(state = 'RUNNING' AND lease_owner IS NOT NULL AND lease_token IS NOT NULL "
+            "AND lease_expires_at IS NOT NULL) OR "
+            "(state <> 'RUNNING' AND lease_owner IS NULL AND lease_token IS NULL "
+            "AND lease_expires_at IS NULL)",
+            name="ck_work_lease_consistent",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -117,6 +134,7 @@ class WorkIntent(Base):
 class WorkAttempt(Base):
     __tablename__ = "work_attempt"
     __table_args__ = (
+        CheckConstraint("btrim(org_id) <> ''", name="ck_work_attempt_org_nonempty"),
         ForeignKeyConstraint(
             ["org_id", "work_intent_id"],
             ["work_intent.org_id", "work_intent.id"],
@@ -143,7 +161,10 @@ class WorkAttempt(Base):
 
 class AuditEvent(Base):
     __tablename__ = "audit_event"
-    __table_args__ = (CheckConstraint("event_type <> ''", name="ck_audit_event_nonempty_type"),)
+    __table_args__ = (
+        CheckConstraint("event_type <> ''", name="ck_audit_event_nonempty_type"),
+        CheckConstraint("btrim(org_id) <> ''", name="ck_audit_event_org_nonempty"),
+    )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     org_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)

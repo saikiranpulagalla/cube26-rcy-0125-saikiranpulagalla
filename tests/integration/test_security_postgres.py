@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, ProgrammingError
 
 from recovery_manager.db import assert_safe_runtime_role, make_engine, set_local_tenant
 from recovery_manager.ingestion import accept_input
@@ -58,3 +58,22 @@ def test_pool_switch_does_not_retain_previous_tenant_context(
 def test_missing_tenant_context_is_default_deny(runtime_factory) -> None:
     with runtime_factory() as session, session.begin():
         assert session.execute(select(RawEnvelope)).scalars().all() == []
+
+
+def test_api_runtime_cannot_mutate_or_delete_protected_history(
+    runtime_factory, alpha, settings
+) -> None:
+    result = _accept(runtime_factory, alpha, settings, "immutable-key")
+    with pytest.raises(ProgrammingError):
+        with runtime_factory() as session, session.begin():
+            set_local_tenant(session, alpha.org_id)
+            envelope = session.get(RawEnvelope, result.envelope_id)
+            assert envelope is not None
+            envelope.raw_bytes = b"tampered"
+    with pytest.raises(ProgrammingError):
+        with runtime_factory() as session, session.begin():
+            set_local_tenant(session, alpha.org_id)
+            work = session.execute(
+                select(WorkIntent).where(WorkIntent.envelope_id == result.envelope_id)
+            ).scalar_one()
+            session.delete(work)

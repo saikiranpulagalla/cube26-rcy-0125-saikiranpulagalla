@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
@@ -11,7 +13,22 @@ from recovery_manager.db import make_engine, make_session_factory, set_local_ten
 
 @pytest.fixture(scope="session")
 def settings() -> Settings:
-    return Settings()
+    return Settings(
+        database_url=os.environ.get(
+            "RECOVERY_DATABASE_URL", "postgresql+psycopg://recovery_app:change-me@localhost:5432/recovery"
+        ),
+        migration_database_url=os.environ.get(
+            "RECOVERY_MIGRATION_DATABASE_URL", "postgresql+psycopg://recovery_owner:change-me@localhost:5432/recovery"
+        ),
+        worker_database_url=os.environ.get(
+            "RECOVERY_WORKER_DATABASE_URL", "postgresql+psycopg://recovery_worker:change-me@localhost:5432/recovery"
+        ),
+        development_mode=True,
+        dev_credentials=(
+            '{"alpha-local-token":{"org_id":"org_demo_alpha","actor_id":"operator_alpha","role":"operator"},'
+            '"bravo-local-token":{"org_id":"org_demo_bravo","actor_id":"operator_bravo","role":"operator"}}'
+        ),
+    )
 
 
 @pytest.fixture(scope="session")
@@ -22,6 +39,8 @@ def postgres_available(settings: Settings) -> bool:
             connection.execute(text("SELECT 1"))
         return True
     except OperationalError:
+        if os.environ.get("RECOVERY_REQUIRE_POSTGRES", "").lower() == "true":
+            pytest.fail("Required PostgreSQL integration environment unavailable")
         return False
 
 
@@ -37,6 +56,13 @@ def runtime_factory(settings: Settings, postgres_available: bool) -> sessionmake
             )
         )
     return make_session_factory(make_engine(settings))
+
+
+@pytest.fixture
+def worker_factory(settings: Settings, postgres_available: bool) -> sessionmaker[Session]:
+    if not postgres_available:
+        pytest.skip("PostgreSQL integration environment unavailable")
+    return make_session_factory(make_engine(settings, worker=True))
 
 
 @pytest.fixture

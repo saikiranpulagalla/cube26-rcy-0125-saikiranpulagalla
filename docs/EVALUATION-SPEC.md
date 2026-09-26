@@ -8,6 +8,14 @@ Split dependency-connected groups, never merely rows or `unit_id`. A group joins
 
 The final holdout remains inaccessible to ordinary implementation tests. If independent custody is unavailable, call it an author-held locked set, not independent blind evaluation.
 
+## Freeze manifest and authority classes
+
+Before labels are created, commit a versioned manifest containing scenario-family identifiers,
+dependency-group identifiers, split seed, split algorithm version, and a holdout custody record.
+Only an explicit versioned change-control entry may change it. Each gold assertion is classified as
+`VERIFIED_POLICY`, `SYNTHETIC_MECHANICS`, or `POLICY_UNAVAILABLE`; the latter must remain
+`NOT_DETERMINABLE` rather than being converted into a policy claim.
+
 ## Gold requirements
 
 Gold records must contain opportunity identity, recovery basis, proposition, conclusion/action, amount derivation/currency, quantity/coverage, evidence versions, settlement/pursuit allocations, policy applicability/source, cutoff and annotation provenance. `NOT_DETERMINABLE` is valid. Human agreement cannot manufacture policy authority.
@@ -25,6 +33,13 @@ Let `N` be fixed benchmark opportunities, `G` known positive new-pursuit residua
 - Evidence sufficiency: claims whose cited facts establish every premise / `|P|`.
 - Exact amount accuracy: exact amount-and-currency matches among opportunity/basis matches.
 - False exposure, overclaim exposure and missed justified value are calculated separately per currency; correct recovery never offsets false exposure.
+
+For a currency `c`, false exposure is the sum of predicted claim amounts in `c` that have no
+one-to-one strict gold opportunity. Overclaim exposure is the sum of `max(predicted - justified, 0)`
+for one-to-one matched opportunities in `c`. Missed justified value is the sum of
+`max(justified - correctly reserved/predicted amount, 0)` for gold opportunities in `c`.
+`SILENT`, `UNCERTAIN`, `POLICY_UNAVAILABLE`, execution failure, and `REVIEW` rates each use `N` as
+their denominator and have mutually recorded outcome fields, even where a report also groups them.
 
 SILENT, UNCERTAIN, REVIEW, policy-unavailable and execution failure retain separate denominators and can overlap. Machine-only metrics and post-human outcomes remain separate.
 

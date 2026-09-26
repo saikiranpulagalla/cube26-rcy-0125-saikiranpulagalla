@@ -1,5 +1,21 @@
 # v0.1 operations
 
+## Security boundary
+
+Copy `.env.example` to an uncommitted `.env`, replace every placeholder password, and use
+`docker compose up postgres`. The local database is bound to loopback and password-authenticated;
+the admin, migration owner, API runtime, and worker runtime use separate credentials. The sample
+development credentials activate only when `RECOVERY_DEVELOPMENT_MODE=true` is explicit.
+
+`recovery_app` may only add raw envelopes, work intents, and audit events. `recovery_worker` alone
+may perform constrained work lifecycle changes. Raw envelopes and audit rows are append-only.
+
+## Required verification
+
+`make verify` is the mandatory gate. It requires PostgreSQL and fails rather than skipping security
+or integration tests. It runs migration drift, lint, typing, and the full test suite. The CI workflow
+also smoke-tests every headless command.
+
 ## Local setup
 
 Copy `.env.example` to an uncommitted `.env`, install Python 3.12 dependencies, start PostgreSQL, then migrate as the owner role:

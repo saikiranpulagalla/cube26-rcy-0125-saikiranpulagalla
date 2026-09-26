@@ -32,19 +32,25 @@ def validate_input(
     except UnicodeDecodeError:
         return StructuralValidation("CSV", "QUARANTINED", "CSV must be UTF-8", ())
     try:
-        reader = csv.DictReader(io.StringIO(decoded, newline=""))
-        if reader.fieldnames is None or any(not field for field in reader.fieldnames):
+        reader = csv.reader(io.StringIO(decoded, newline=""), strict=True)
+        headers = next(reader, None)
+        if headers is None or any(not field or not field.strip() for field in headers):
             return StructuralValidation("CSV", "QUARANTINED", "CSV requires non-empty headers", ())
-        if len(reader.fieldnames) != len(set(reader.fieldnames)):
+        if len(headers) != len(set(headers)):
             return StructuralValidation("CSV", "QUARANTINED", "CSV has duplicate headers", ())
+        org_index = headers.index("org_id") if "org_id" in headers else None
         declared_orgs: set[str] = set()
         for row in reader:
-            if None in row:
+            if len(row) != len(headers):
+                reason = "CSV has surplus columns" if len(row) > len(headers) else "CSV row length does not match headers"
                 return StructuralValidation(
-                    "CSV", "QUARANTINED", "CSV has surplus columns", tuple(sorted(declared_orgs))
+                    "CSV", "QUARANTINED", reason, tuple(sorted(declared_orgs))
                 )
-            if "org_id" in row and row["org_id"]:
-                declared_orgs.add(row["org_id"].strip())
+            if org_index is not None:
+                declared = row[org_index].strip()
+                if not declared:
+                    return StructuralValidation("CSV", "QUARANTINED", "CSV has an empty org_id", ())
+                declared_orgs.add(declared)
     except csv.Error:
         return StructuralValidation("CSV", "QUARANTINED", "CSV is structurally malformed", ())
     if declared_orgs and declared_orgs != {authenticated_org_id}:

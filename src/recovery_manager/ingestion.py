@@ -4,8 +4,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from uuid import UUID
 
-from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -13,7 +12,6 @@ from recovery_manager.config import Principal, Settings
 from recovery_manager.models import (
     AuditEvent,
     RawEnvelope,
-    TenantState,
     WorkIntent,
 )
 from recovery_manager.validation import validate_input
@@ -33,16 +31,9 @@ class AcceptanceResult:
 
 
 def _advance_tenant_revision(session: Session, org_id: str) -> int:
-    session.execute(
-        insert(TenantState)
-        .values(org_id=org_id, decision_revision=0)
-        .on_conflict_do_nothing(index_elements=[TenantState.org_id])
+    return int(
+        session.execute(text("SELECT advance_tenant_revision(:org_id)"), {"org_id": org_id}).scalar_one()
     )
-    state = session.execute(
-        select(TenantState).where(TenantState.org_id == org_id).with_for_update()
-    ).scalar_one()
-    state.decision_revision += 1
-    return state.decision_revision
 
 
 def _replay_if_present(
@@ -74,6 +65,7 @@ def accept_input(
     source_name: str,
     idempotency_key: str,
     settings: Settings,
+    fixture_provenance: dict[str, object] | None = None,
 ) -> AcceptanceResult:
     if not idempotency_key.strip():
         raise ValueError("Idempotency-Key must not be empty")
@@ -99,6 +91,7 @@ def accept_input(
                 validation_status=result.status,
                 quarantine_reason=result.quarantine_reason,
                 declared_source_orgs=list(result.declared_orgs),
+                fixture_provenance=fixture_provenance,
             )
             session.add(envelope)
             session.flush()

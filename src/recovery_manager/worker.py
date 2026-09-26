@@ -44,7 +44,7 @@ class PollingWorker:
     def recover_expired_and_acquire(self, org_id: str) -> tuple[UUID, UUID] | None:
         with self.factory() as session, session.begin():
             set_local_tenant(session, org_id)
-            now = session.execute(select(func.now())).scalar_one()
+            now = session.execute(select(func.clock_timestamp())).scalar_one()
             expired = (
                 session.execute(
                     select(WorkIntent)
@@ -59,12 +59,22 @@ class PollingWorker:
                 .all()
             )
             for work in expired:
+                expired_token = work.lease_token
                 work.state = ExecutionState.RETRYABLE_FAILURE.value
                 work.last_error = "Lease expired before completion"
                 work.lease_owner = None
                 work.lease_token = None
                 work.lease_expires_at = None
                 work.next_run_at = now
+                attempt = session.execute(
+                    select(WorkAttempt).where(
+                        WorkAttempt.org_id == org_id,
+                        WorkAttempt.work_intent_id == work.id,
+                        WorkAttempt.lease_token == expired_token,
+                    )
+                ).scalar_one()
+                attempt.finished_at = now
+                attempt.outcome = "LEASE_EXPIRED"
                 session.add(
                     AuditEvent(
                         org_id=org_id,
@@ -128,12 +138,12 @@ class PollingWorker:
     def complete(self, org_id: str, work_id: UUID, lease_token: UUID) -> None:
         with self.factory() as session, session.begin():
             set_local_tenant(session, org_id)
-            now = session.execute(select(func.now())).scalar_one()
             work = session.execute(
                 select(WorkIntent)
                 .where(WorkIntent.org_id == org_id, WorkIntent.id == work_id)
                 .with_for_update()
             ).scalar_one_or_none()
+            now = session.execute(select(func.clock_timestamp())).scalar_one()
             if (
                 work is None
                 or work.state != ExecutionState.RUNNING.value
@@ -172,16 +182,18 @@ class PollingWorker:
     ) -> None:
         with self.factory() as session, session.begin():
             set_local_tenant(session, org_id)
-            now = session.execute(select(func.now())).scalar_one()
             work = session.execute(
                 select(WorkIntent)
                 .where(WorkIntent.org_id == org_id, WorkIntent.id == work_id)
                 .with_for_update()
             ).scalar_one_or_none()
+            now = session.execute(select(func.clock_timestamp())).scalar_one()
             if (
                 work is None
                 or work.lease_token != lease_token
                 or work.state != ExecutionState.RUNNING.value
+                or work.lease_expires_at is None
+                or work.lease_expires_at <= now
             ):
                 raise StaleLeaseError("Worker no longer owns this lease")
             terminal = not retryable or work.attempt_count >= work.max_attempts

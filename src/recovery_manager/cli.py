@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from time import sleep
 from uuid import UUID
 
 import typer
@@ -8,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from recovery_manager.config import Settings, get_settings
 from recovery_manager.db import (
-    assert_safe_runtime_role,
+    assert_runtime_ready,
     make_engine,
     make_session_factory,
     set_local_tenant,
@@ -24,7 +25,14 @@ app = typer.Typer(help="Recovery Manager v0.1 headless foundation. No recovery d
 def _dependencies() -> tuple[Settings, sessionmaker[Session]]:
     settings = get_settings()
     engine = make_engine(settings)
-    assert_safe_runtime_role(engine)
+    assert_runtime_ready(engine, settings, required_role="recovery_app")
+    return settings, make_session_factory(engine)
+
+
+def _worker_dependencies() -> tuple[Settings, sessionmaker[Session]]:
+    settings = get_settings()
+    engine = make_engine(settings, worker=True)
+    assert_runtime_ready(engine, settings, required_role="recovery_worker")
     return settings, make_session_factory(engine)
 
 
@@ -75,7 +83,7 @@ def status(envelope_id: UUID, credential: str) -> None:
 
 @app.command("worker-once")
 def worker_once(owner: str = "cli-worker") -> None:
-    settings, factory = _dependencies()
+    settings, factory = _worker_dependencies()
     worker = PollingWorker(factory, settings, owner)
     seen: set[str] = set()
     for principal in settings.principals().values():
@@ -84,6 +92,29 @@ def worker_once(owner: str = "cli-worker") -> None:
             result = worker.run_once(principal.org_id)
             if result is not None:
                 typer.echo(f"completed={result} org={principal.org_id}")
+
+
+@app.command("worker-poll")
+def worker_poll(
+    owner: str = "cli-worker",
+    idle_seconds: float = typer.Option(1.0, min=0.1, max=60.0),
+    max_iterations: int | None = typer.Option(None, min=1),
+) -> None:
+    """Poll tenants with bounded idle sleep; Ctrl-C stops without changing work state."""
+    settings, factory = _worker_dependencies()
+    worker = PollingWorker(factory, settings, owner)
+    principals = {principal.org_id for principal in settings.principals().values()}
+    iterations = 0
+    try:
+        while max_iterations is None or iterations < max_iterations:
+            processed = False
+            for org_id in principals:
+                processed = worker.run_once(org_id) is not None or processed
+            iterations += 1
+            if not processed:
+                sleep(idle_seconds)
+    except KeyboardInterrupt:
+        typer.echo("worker-poll stopped")
 
 
 @app.command("fixture-load")
