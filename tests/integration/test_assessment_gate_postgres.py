@@ -59,6 +59,151 @@ def _register_synthetic_profile(settings, org_id: str) -> None:
         )
 
 
+def _assess_synthetic_candidate(
+    session,
+    settings,
+    *,
+    org_id: str,
+    premise_key: str = "SYNTHETIC_VALID_FEE",
+    evidence_quantity: int = 1,
+    source_value: bool = True,
+    asserted_value: bool = True,
+    subject_key: str = "SYN-FEE-001",
+    mismatched_source_version: bool = False,
+    polarity: str = "SUPPORTS",
+):
+    """Build a complete mechanics candidate, varying one proof premise at a time."""
+    _register_synthetic_profile(settings, org_id)
+    set_local_tenant(session, org_id)
+    accept_input(
+        session,
+        Principal(org_id=org_id, actor_id="synthetic_fixture", role="fixture_admin"),
+        b"synthetic fixture",
+        "application/octet-stream",
+        "synthetic",
+        f"candidate-{org_id}",
+        settings,
+    )
+    provenance = {"fixture_profile": "synthetic-mechanics-v1", "fixture_sha256": "a" * 64}
+    source = SourceRecordVersion(
+        org_id=org_id,
+        source_kind="synthetic",
+        source_record_id="SYN-FEE-001",
+        content_sha256="c" * 64,
+        declared_org_id=org_id,
+        payload={"fee": {"valid": source_value}},
+    )
+    session.add(source)
+    session.flush()
+    event = FinancialEvent(
+        org_id=org_id,
+        source_record_version_id=source.id,
+        event_type="SYNTHETIC_FEE",
+        direction="DEBIT",
+        amount_minor=1000,
+        currency="USD",
+        quantity=1,
+        posting_time=None,
+        posting_time_precision=None,
+        incident_time=None,
+        incident_time_precision=None,
+        business_references={"synthetic_fixture": "SYN-FEE-001"},
+        normalized_fields={"synthetic": True},
+    )
+    evidence = EvidenceRecord(
+        org_id=org_id,
+        source_record_version_id=source.id,
+        evidence_kind="SYNTHETIC",
+        observed_time=None,
+        observed_time_precision=None,
+        coverage_quantity=evidence_quantity,
+        coverage_scope={"coverage": "KNOWN"},
+        normalized_fields={},
+    )
+    obligation = EconomicObligation(
+        org_id=org_id,
+        economic_key="SYN-FEE-001",
+        financial_event_id=event.id,
+        recovery_basis="INVALID_FEE",
+        currency="USD",
+        business_instance=provenance,
+        quantity_scope={"coverage": "KNOWN", "quantity": "1"},
+    )
+    session.add(event)
+    session.flush()
+    session.add_all((evidence, obligation))
+    session.flush()
+    assertion_source_id = source.id
+    if mismatched_source_version:
+        wrong_source = SourceRecordVersion(
+            org_id=org_id,
+            source_kind="synthetic-proof",
+            source_record_id="SYN-FEE-001-proof",
+            content_sha256="d" * 64,
+            declared_org_id=org_id,
+            payload={"fee": {"valid": asserted_value}},
+        )
+        session.add(wrong_source)
+        session.flush()
+        assertion_source_id = wrong_source.id
+    session.add_all(
+        (
+            EvidenceAssertion(
+                org_id=org_id,
+                evidence_record_id=evidence.id,
+                source_record_version_id=assertion_source_id,
+                proposition_key="synthetic-invalid-fee",
+                subject_key=subject_key,
+                polarity=polarity,
+                fact_path="fee.valid",
+                asserted_value=asserted_value,
+                scope={"coverage": "KNOWN", "premise_key": premise_key},
+                decisive=True,
+            ),
+            AmountDerivation(
+                org_id=org_id,
+                obligation_id=obligation.id,
+                derivation_version=1,
+                currency="USD",
+                observed_amount_minor=1000,
+                expected_amount_minor=800,
+                justified_entitlement_minor=200,
+                rounding_rule="integer minor units",
+                basis_class="SYNTHETIC_ONLY",
+                source_basis=provenance,
+            ),
+        )
+    )
+    session.flush()
+    return assess_synthetic(
+        session,
+        org_id,
+        obligation.id,
+        "SYN-FEE-001",
+        "synthetic-invalid-fee",
+        synthetic_capability_enabled=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "org_id"),
+    (
+        ({"premise_key": "IRRELEVANT"}, "org_proof_irrelevant"),
+        ({"evidence_quantity": 0}, "org_proof_insufficient"),
+        ({"source_value": False, "asserted_value": True}, "org_proof_false_value"),
+        ({"mismatched_source_version": True}, "org_proof_wrong_source"),
+        ({"subject_key": "other-business-instance"}, "org_proof_wrong_subject"),
+        ({"polarity": "CONTRADICTS"}, "org_proof_contradictory"),
+    ),
+)
+def test_synthetic_readiness_requires_exact_required_evidence_premise(
+    runtime_factory, settings, kwargs, org_id
+) -> None:
+    with runtime_factory() as session, session.begin():
+        assessment = _assess_synthetic_candidate(session, settings, org_id=org_id, **kwargs)
+        assert assessment.conclusion == "REVIEW"
+
+
 def test_empty_decisive_evidence_cannot_produce_synthetic_ready(
     runtime_factory, alpha, settings
 ) -> None:
@@ -207,7 +352,7 @@ def test_trusted_synthetic_control_is_ready_for_two_dollars(
                 polarity="SUPPORTS",
                 fact_path="fee.valid",
                 asserted_value=True,
-                scope={"coverage": "KNOWN"},
+                scope={"coverage": "KNOWN", "premise_key": "SYNTHETIC_VALID_FEE"},
                 decisive=True,
             )
         )

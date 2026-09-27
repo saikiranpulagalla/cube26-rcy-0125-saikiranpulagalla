@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from uuid import UUID, uuid4
 
 from sqlalchemy import select, text
@@ -17,6 +18,8 @@ from recovery_manager.models import (
     ClaimPursuit,
     CurrentRecoveryRecommendation,
     EconomicObligation,
+    EvidenceAssertion,
+    EvidenceRecord,
     FinancialEvent,
     PolicySourceVersion,
     PursuitAllocation,
@@ -55,6 +58,44 @@ def _matches_pinned_synthetic_derivation(
     ):
         return False
     return derivation.justified_entitlement_minor == financial_event.amount_minor - permitted
+
+
+def _supports_required_synthetic_premises(
+    session: Session,
+    org_id: str,
+    obligation: EconomicObligation,
+    assertions: tuple[EvidenceAssertion, ...],
+) -> bool:
+    """Require a supporting, subject-bound fact with enough exact evidence coverage."""
+    if obligation.quantity_scope.get("coverage") != "KNOWN":
+        return False
+    try:
+        required_quantity = Decimal(str(obligation.quantity_scope["quantity"]))
+    except (InvalidOperation, KeyError, TypeError):
+        return False
+    if required_quantity <= 0:
+        return False
+    for assertion in assertions:
+        if (
+            assertion.polarity != "SUPPORTS"
+            or assertion.scope.get("premise_key") != "SYNTHETIC_VALID_FEE"
+            or assertion.subject_key != obligation.economic_key
+        ):
+            continue
+        evidence = session.execute(
+            select(EvidenceRecord).where(
+                EvidenceRecord.org_id == org_id,
+                EvidenceRecord.id == assertion.evidence_record_id,
+            )
+        ).scalar_one_or_none()
+        if (
+            evidence is not None
+            and evidence.coverage_scope.get("coverage") == "KNOWN"
+            and evidence.coverage_quantity is not None
+            and evidence.coverage_quantity >= required_quantity
+        ):
+            return True
+    return False
 
 
 def derived_recommendation(residual: Residual, prerequisites: bool) -> tuple[str, int | None]:
@@ -190,6 +231,8 @@ def assess_synthetic(
             prove_assertion(session, org_id, assertion).mechanically_supported
             for assertion in decisive
         )
+        and subject_key == obligation.economic_key
+        and _supports_required_synthetic_premises(session, org_id, obligation, decisive)
     )
     conclusion, amount = derived_recommendation(residual, prerequisites)
     assessment_id = uuid4()

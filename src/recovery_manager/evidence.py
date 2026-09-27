@@ -9,7 +9,12 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from recovery_manager.models import EvidenceAssertion, EvidenceLifecycleEvent, SourceRecordVersion
+from recovery_manager.models import (
+    EvidenceAssertion,
+    EvidenceLifecycleEvent,
+    EvidenceRecord,
+    SourceRecordVersion,
+)
 
 
 @dataclass(frozen=True)
@@ -39,6 +44,14 @@ def _field(payload: dict[str, Any], path: str) -> object:
 
 
 def prove_assertion(session: Session, org_id: str, assertion: EvidenceAssertion) -> EvidenceProof:
+    evidence = session.execute(
+        select(EvidenceRecord).where(
+            EvidenceRecord.org_id == org_id,
+            EvidenceRecord.id == assertion.evidence_record_id,
+        )
+    ).scalar_one_or_none()
+    if evidence is None or evidence.source_record_version_id != assertion.source_record_version_id:
+        return EvidenceProof(assertion.id, False, False, "EVIDENCE_SOURCE_VERSION_MISMATCH")
     source = session.execute(
         select(SourceRecordVersion).where(
             SourceRecordVersion.org_id == org_id,
