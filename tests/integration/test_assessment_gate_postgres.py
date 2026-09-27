@@ -20,6 +20,7 @@ from recovery_manager.models import (
     EvidenceRecord,
     FinancialEvent,
     PolicySourceVersion,
+    ReconciliationState,
     SourceRecordVersion,
     SyntheticFixtureProfile,
 )
@@ -71,6 +72,7 @@ def _assess_synthetic_candidate(
     subject_key: str = "SYN-FEE-001",
     mismatched_source_version: bool = False,
     polarity: str = "SUPPORTS",
+    reconciliation_state: str | None = "RECONCILED_NONE",
 ):
     """Build a complete mechanics candidate, varying one proof premise at a time."""
     _register_synthetic_profile(settings, org_id)
@@ -133,6 +135,28 @@ def _assess_synthetic_candidate(
     session.flush()
     session.add_all((evidence, obligation))
     session.flush()
+    if reconciliation_state is not None:
+        session.add_all(
+            (
+                ReconciliationState(
+                    org_id=org_id,
+                    obligation_id=obligation.id,
+                    domain="SETTLEMENT",
+                    state=reconciliation_state,
+                    cutoff=None,
+                    source_set_sha256="e" * 64,
+                ),
+                ReconciliationState(
+                    org_id=org_id,
+                    obligation_id=obligation.id,
+                    domain="PURSUIT",
+                    state=reconciliation_state,
+                    cutoff=None,
+                    source_set_sha256="f" * 64,
+                ),
+            )
+        )
+        session.flush()
     assertion_source_id = source.id
     if mismatched_source_version:
         wrong_source = SourceRecordVersion(
@@ -194,6 +218,8 @@ def _assess_synthetic_candidate(
         ({"mismatched_source_version": True}, "org_proof_wrong_source"),
         ({"subject_key": "other-business-instance"}, "org_proof_wrong_subject"),
         ({"polarity": "CONTRADICTS"}, "org_proof_contradictory"),
+        ({"reconciliation_state": None}, "org_reconciliation_absent"),
+        ({"reconciliation_state": "UNKNOWN"}, "org_reconciliation_unknown"),
     ),
 )
 def test_synthetic_readiness_requires_exact_required_evidence_premise(
@@ -342,6 +368,26 @@ def test_trusted_synthetic_control_is_ready_for_two_dollars(
                     )
                 )
                 session.flush()
+        session.add_all(
+            (
+                ReconciliationState(
+                    org_id=synthetic_org,
+                    obligation_id=obligation.id,
+                    domain="SETTLEMENT",
+                    state="RECONCILED_NONE",
+                    cutoff=None,
+                    source_set_sha256="e" * 64,
+                ),
+                ReconciliationState(
+                    org_id=synthetic_org,
+                    obligation_id=obligation.id,
+                    domain="PURSUIT",
+                    state="RECONCILED_NONE",
+                    cutoff=None,
+                    source_set_sha256="f" * 64,
+                ),
+            )
+        )
         session.add(
             EvidenceAssertion(
                 org_id=synthetic_org,

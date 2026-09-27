@@ -23,6 +23,7 @@ from recovery_manager.models import (
     FinancialEvent,
     PolicySourceVersion,
     PursuitAllocation,
+    ReconciliationState,
     RecoveryAssessment,
     SyntheticFixtureProfile,
     SyntheticPacketReservation,
@@ -178,6 +179,18 @@ def assess_synthetic(
     )
     found = discover_assertions(session, org_id, subject_key, proposition_key, limit=100)
     residual = residual_for_obligation(session, org_id, obligation_id)
+    reconciliation: dict[str, str] = {}
+    for domain, state in session.execute(
+        select(ReconciliationState.domain, ReconciliationState.state).where(
+            ReconciliationState.org_id == org_id,
+            ReconciliationState.obligation_id == obligation_id,
+        )
+    ).tuples():
+        reconciliation[domain] = state
+    reconciliation_complete = all(
+        reconciliation.get(domain) in {"RECONCILED_NONE", "RECONCILED_COMPLETE"}
+        for domain in ("SETTLEMENT", "PURSUIT")
+    )
     source_basis = derivation.source_basis if derivation is not None else {}
     fixture_profile = source_basis.get("fixture_profile")
     fixture_sha256 = source_basis.get("fixture_sha256")
@@ -221,6 +234,7 @@ def assess_synthetic(
         and derivation.basis_class == "SYNTHETIC_ONLY"
         and obligation.recovery_basis == "INVALID_FEE"
         and residual.remaining_minor is not None
+        and reconciliation_complete
         and found.complete
         and not found.conflict_present
         and policy_applies

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from recovery_manager.config import Settings
 
-EXPECTED_MIGRATION_HEAD = "0016_opportunity_identity"
+EXPECTED_MIGRATION_HEAD = "0018_reconciliation_org_index"
 
 
 def make_engine(settings: Settings, *, worker: bool = False) -> Engine:

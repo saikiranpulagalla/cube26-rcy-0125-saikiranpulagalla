@@ -370,6 +370,29 @@ class AmountDerivation(Base):
     )
 
 
+class ReconciliationState(Base):
+    __tablename__ = "reconciliation_state"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "obligation_id"],
+            ["economic_obligation.org_id", "economic_obligation.id"],
+            name="fk_reconciliation_obligation_tenant",
+        ),
+        UniqueConstraint("org_id", "obligation_id", "domain", name="uq_reconciliation_domain"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    obligation_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    domain: Mapped[str] = mapped_column(String(16), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    cutoff: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_set_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class SettlementAllocation(Base):
     __tablename__ = "settlement_allocation"
     __table_args__ = (
