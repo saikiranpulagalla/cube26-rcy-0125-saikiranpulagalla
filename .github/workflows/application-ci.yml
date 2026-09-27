@@ -12,23 +12,26 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_DB: recovery
+          POSTGRES_DB: recovery_test
           POSTGRES_USER: recovery_admin
           POSTGRES_PASSWORD: ci-admin-password-not-a-secret
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U recovery_admin -d recovery"
+          --health-cmd "pg_isready -U recovery_admin -d recovery_test"
           --health-interval 2s --health-timeout 3s --health-retries 30
     env:
       PGPASSWORD: ci-admin-password-not-a-secret
+      PGHOST: localhost
       POSTGRES_USER: recovery_admin
-      POSTGRES_DB: recovery
+      POSTGRES_DB: recovery_test
       RECOVERY_OWNER_DB_PASSWORD: ci-owner-password-not-a-secret
       RECOVERY_APP_DB_PASSWORD: ci-app-password-not-a-secret
       RECOVERY_WORKER_DB_PASSWORD: ci-worker-password-not-a-secret
-      RECOVERY_DATABASE_URL: postgresql+psycopg://recovery_app:ci-app-password-not-a-secret@localhost:5432/recovery
-      RECOVERY_MIGRATION_DATABASE_URL: postgresql+psycopg://recovery_owner:ci-owner-password-not-a-secret@localhost:5432/recovery
-      RECOVERY_WORKER_DATABASE_URL: postgresql+psycopg://recovery_worker:ci-worker-password-not-a-secret@localhost:5432/recovery
+      TEST_RUNTIME_DATABASE_URL: postgresql+psycopg://recovery_app:ci-app-password-not-a-secret@localhost:5432/recovery_test
+      TEST_OWNER_DATABASE_URL: postgresql+psycopg://recovery_owner:ci-owner-password-not-a-secret@localhost:5432/recovery_test
+      RECOVERY_DATABASE_URL: postgresql+psycopg://recovery_app:ci-app-password-not-a-secret@localhost:5432/recovery_test
+      RECOVERY_MIGRATION_DATABASE_URL: postgresql+psycopg://recovery_owner:ci-owner-password-not-a-secret@localhost:5432/recovery_test
+      RECOVERY_WORKER_DATABASE_URL: postgresql+psycopg://recovery_worker:ci-worker-password-not-a-secret@localhost:5432/recovery_test
       RECOVERY_DEVELOPMENT_MODE: "true"
       RECOVERY_DEV_CREDENTIALS: '{"alpha-local-token":{"org_id":"org_demo_alpha","actor_id":"operator_alpha","role":"operator"},"bravo-local-token":{"org_id":"org_demo_bravo","actor_id":"operator_bravo","role":"operator"}}'
       RECOVERY_REQUIRE_POSTGRES: "true"

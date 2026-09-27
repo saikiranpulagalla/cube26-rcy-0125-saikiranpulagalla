@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import re
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -13,23 +15,33 @@ from recovery_manager.db import make_engine, make_session_factory, set_local_ten
 
 @pytest.fixture(scope="session")
 def settings() -> Settings:
-    mandatory = os.environ.get("RECOVERY_REQUIRE_POSTGRES", "").lower() == "true"
     test_runtime = os.environ.get("TEST_RUNTIME_DATABASE_URL")
     test_owner = os.environ.get("TEST_OWNER_DATABASE_URL")
-    if mandatory and (not test_runtime or not test_owner):
+    if not test_runtime or not test_owner:
         raise pytest.UsageError("TEST CONFIGURATION ERROR: explicit runtime and owner test URLs are required")
-    if test_owner and not ("/astra_" in test_owner or test_owner.rstrip("/").endswith("_test")):
-        raise pytest.UsageError("TEST CONFIGURATION ERROR: owner URL is not an isolated test database")
+    try:
+        runtime_url, owner_url = make_url(test_runtime), make_url(test_owner)
+        worker_url = make_url(os.environ["RECOVERY_WORKER_DATABASE_URL"]) if os.environ.get(
+            "RECOVERY_WORKER_DATABASE_URL"
+        ) else runtime_url.set(username="recovery_worker", password=None)
+        endpoint = (owner_url.host, owner_url.port or 5432, owner_url.database)
+        for url, role in ((runtime_url, "recovery_app"), (owner_url, "recovery_owner"), (worker_url, "recovery_worker")):
+            if (
+                url.drivername != "postgresql+psycopg"
+                or url.username != role
+                or url.query
+                or not url.host
+                or not re.fullmatch(r"(?:astra_[a-z0-9_]+|[a-z0-9_]+_test)", url.database or "")
+                or (url.host, url.port or 5432, url.database) != endpoint
+            ):
+                raise ValueError("isolated test database URLs must use expected roles and one endpoint")
+    except (ValueError, TypeError) as exc:
+        raise pytest.UsageError("TEST CONFIGURATION ERROR: invalid isolated test database URLs") from exc
     return Settings(
-        database_url=test_runtime or os.environ.get(
-            "RECOVERY_DATABASE_URL", "postgresql+psycopg://recovery_app:change-me@localhost:5432/recovery"
-        ),
-        migration_database_url=test_owner or os.environ.get(
-            "RECOVERY_MIGRATION_DATABASE_URL", "postgresql+psycopg://recovery_owner:change-me@localhost:5432/recovery"
-        ),
-        worker_database_url=os.environ.get(
-            "RECOVERY_WORKER_DATABASE_URL", "postgresql+psycopg://recovery_worker:change-me@localhost:5432/recovery"
-        ),
+        database_url=test_runtime,
+        migration_database_url=test_owner,
+        worker_database_url=worker_url.render_as_string(hide_password=False),
+        _env_file=None,
         development_mode=True,
         dev_credentials=(
             '{"alpha-local-token":{"org_id":"org_demo_alpha","actor_id":"operator_alpha","role":"operator"},'
@@ -57,6 +69,9 @@ def runtime_factory(settings: Settings, postgres_available: bool) -> sessionmake
         pytest.skip("PostgreSQL integration environment unavailable")
     owner = create_engine(settings.migration_database_url, future=True)
     with owner.begin() as connection:
+        database, role = connection.execute(text("SELECT current_database(), current_user")).one()
+        if database != make_url(settings.migration_database_url).database or role != "recovery_owner":
+            raise pytest.UsageError("TEST CONFIGURATION ERROR: cleanup connection identity mismatch")
         connection.execute(
             text(
                 "TRUNCATE current_recovery_recommendation, synthetic_packet_reservation, recovery_assessment, evidence_lifecycle_event, evidence_assertion, policy_source_version, pursuit_allocation, claim_pursuit, settlement_reversal, settlement_allocation, "
