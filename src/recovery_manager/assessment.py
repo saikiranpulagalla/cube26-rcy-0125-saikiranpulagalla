@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select, text
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from recovery_manager.evidence import discover_assertions, prove_assertion
@@ -162,30 +162,34 @@ def assess_synthetic(
         )
     )
     conclusion, amount = derived_recommendation(residual, prerequisites)
-    result = RecoveryAssessment(
-        org_id=org_id,
-        obligation_id=obligation.id,
-        tenant_revision=revision,
-        conclusion=conclusion,
-        recoverable_minor=amount,
-        currency=residual.currency if amount is not None else None,
-        dependency_snapshot={
-            "tenant_revision": revision,
-            "derivation_id": str(derivation.id) if derivation else None,
-            "assertion_ids": [str(x.id) for x in found.assertions],
-            "retrieval_complete": found.complete,
+    assessment_id = uuid4()
+    snapshot = {
+        "tenant_revision": revision,
+        "derivation_id": str(derivation.id) if derivation else None,
+        "assertion_ids": [str(x.id) for x in found.assertions],
+        "retrieval_complete": found.complete,
+    }
+    session.execute(
+        text(
+            "SELECT public.publish_recovery_assessment("
+            ":assessment_id, :obligation_id, :revision, :conclusion, :recoverable_minor, :currency, "
+            "CAST(:snapshot AS jsonb))"
+        ),
+        {
+            "assessment_id": assessment_id,
+            "obligation_id": obligation.id,
+            "revision": revision,
+            "conclusion": conclusion,
+            "recoverable_minor": amount,
+            "currency": residual.currency if amount is not None else None,
+            "snapshot": json.dumps(snapshot),
         },
     )
-    session.add(result)
-    session.flush()
-    session.execute(
-        insert(CurrentRecoveryRecommendation)
-        .values(org_id=org_id, obligation_id=obligation.id, assessment_id=result.id)
-        .on_conflict_do_update(
-            index_elements=["org_id", "obligation_id"], set_={"assessment_id": result.id}
+    return session.execute(
+        select(RecoveryAssessment).where(
+            RecoveryAssessment.org_id == org_id, RecoveryAssessment.id == assessment_id
         )
-    )
-    return result
+    ).scalar_one()
 
 
 def reserve_synthetic_packet(
@@ -225,15 +229,11 @@ def reserve_synthetic_packet(
     ).scalar_one()
     if assessment.conclusion != "SYNTHETIC_CLAIM_READY" or assessment.tenant_revision != revision:
         raise ValueError("Assessment is not current synthetic claim-ready")
-    current = session.execute(
-        select(CurrentRecoveryRecommendation)
-        .where(
-            CurrentRecoveryRecommendation.org_id == org_id,
-            CurrentRecoveryRecommendation.obligation_id == assessment.obligation_id,
-        )
-        .with_for_update()
+    current_assessment_id = session.execute(
+        text("SELECT public.lock_current_recovery_assessment(:obligation_id)"),
+        {"obligation_id": assessment.obligation_id},
     ).scalar_one_or_none()
-    if current is None or current.assessment_id != assessment.id:
+    if current_assessment_id != assessment.id:
         raise ValueError("Assessment is historical or stale")
     pursuit = ClaimPursuit(
         org_id=org_id,

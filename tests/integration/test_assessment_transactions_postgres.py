@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import func, select, text
@@ -14,10 +15,8 @@ from recovery_manager.db import set_local_tenant
 from recovery_manager.ingestion import accept_input
 from recovery_manager.models import (
     ClaimPursuit,
-    CurrentRecoveryRecommendation,
     EconomicObligation,
     PursuitAllocation,
-    RecoveryAssessment,
     SyntheticPacketReservation,
     TenantState,
 )
@@ -43,23 +42,21 @@ def _ready_assessment(runtime_factory, settings, org_id: str, key: str) -> tuple
         revision = session.execute(
             select(TenantState.decision_revision).where(TenantState.org_id == org_id)
         ).scalar_one()
-        assessment = RecoveryAssessment(
-            org_id=org_id,
-            obligation_id=obligation.id,
-            tenant_revision=revision,
-            conclusion="SYNTHETIC_CLAIM_READY",
-            recoverable_minor=200,
-            currency="USD",
-            dependency_snapshot={"tenant_revision": revision},
+        assessment_id = uuid4()
+        session.execute(
+            text(
+                "SELECT public.publish_recovery_assessment("
+                ":assessment_id, :obligation_id, :revision, 'SYNTHETIC_CLAIM_READY', 200, 'USD', "
+                "CAST(:snapshot AS jsonb))"
+            ),
+            {
+                "assessment_id": assessment_id,
+                "obligation_id": obligation.id,
+                "revision": revision,
+                "snapshot": json.dumps({"tenant_revision": revision}),
+            },
         )
-        session.add(assessment)
-        session.flush()
-        session.add(
-            CurrentRecoveryRecommendation(
-                org_id=org_id, obligation_id=obligation.id, assessment_id=assessment.id
-            )
-        )
-        return assessment.id, obligation.id
+        return assessment_id, obligation.id
 
 
 def test_concurrent_exports_reserve_one_economic_value(runtime_factory, settings) -> None:
