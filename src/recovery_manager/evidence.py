@@ -95,5 +95,20 @@ def discover_assertions(
     )
     complete = len(rows) <= limit
     selected = tuple(rows[:limit])
-    polarities = {row.polarity for row in selected}
+    # Conflict discovery is intentionally independent of the bounded result set.
+    # A context/candidate limit may make retrieval incomplete, but it must never
+    # turn an omitted adverse assertion into a claim that no conflict exists.
+    polarities = set(
+        session.execute(
+            select(EvidenceAssertion.polarity)
+            .where(
+                EvidenceAssertion.org_id == org_id,
+                EvidenceAssertion.subject_key == subject_key,
+                EvidenceAssertion.proposition_key == proposition_key,
+            )
+            .distinct()
+        )
+        .scalars()
+        .all()
+    )
     return RetrievalResult(selected, complete, polarities == {"SUPPORTS", "CONTRADICTS"})

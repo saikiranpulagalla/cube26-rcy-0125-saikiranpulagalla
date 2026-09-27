@@ -144,6 +144,27 @@ def test_settlement_reversal_and_active_pursuit_reduce_residual(runtime_factory)
         assert (after.allocated_settlement_minor, after.remaining_minor) == (0, 4000)
 
 
+def test_over_settlement_and_over_pursuit_are_conflicts_not_zero_residual(runtime_factory) -> None:
+    with runtime_factory() as session, session.begin():
+        set_local_tenant(session, "org_demo_alpha")
+        obligation = _obligation(session, "org_demo_alpha", "no-silent-clamp")
+        _derivation(session, "org_demo_alpha", obligation, 200)
+        credit = _credit(session, "org_demo_alpha", "credit-over", 300)
+        session.add(
+            SettlementAllocation(
+                org_id="org_demo_alpha",
+                credit_event_id=credit.id,
+                obligation_id=obligation.id,
+                allocated_minor=300,
+                rationale="adversarial over-settlement",
+            )
+        )
+        session.flush()
+        result = residual_for_obligation(session, "org_demo_alpha", obligation.id)
+        assert result.remaining_minor is None
+        assert result.unknown_reason == "OVERSETTLED"
+
+
 def test_allocation_limits_currency_and_pursuit_transitions_are_database_enforced(runtime_factory) -> None:
     with runtime_factory() as session, session.begin():
         set_local_tenant(session, "org_demo_alpha")

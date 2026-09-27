@@ -71,12 +71,40 @@ def residual_for_obligation(session: Session, org_id: str, obligation_id: UUID) 
         ).scalar_one()
     )
     net_settlement = allocated - reversed_minor
-    remaining = derivation.justified_entitlement_minor - net_settlement - active_pursuit
+    if net_settlement < 0:
+        return Residual(
+            derivation.currency,
+            derivation.justified_entitlement_minor,
+            net_settlement,
+            active_pursuit,
+            None,
+            "SETTLEMENT_REVERSAL_CONFLICT",
+        )
+    if net_settlement > derivation.justified_entitlement_minor:
+        return Residual(
+            derivation.currency,
+            derivation.justified_entitlement_minor,
+            net_settlement,
+            active_pursuit,
+            None,
+            "OVERSETTLED",
+        )
+    available_after_settlement = derivation.justified_entitlement_minor - net_settlement
+    if active_pursuit > available_after_settlement:
+        return Residual(
+            derivation.currency,
+            derivation.justified_entitlement_minor,
+            net_settlement,
+            active_pursuit,
+            None,
+            "PURSUIT_ALLOCATION_CONFLICT",
+        )
+    remaining = available_after_settlement - active_pursuit
     return Residual(
         derivation.currency,
         derivation.justified_entitlement_minor,
         net_settlement,
         active_pursuit,
-        max(remaining, 0),
+        remaining,
         None,
     )

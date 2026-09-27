@@ -1,0 +1,271 @@
+"""Synthetic-only deterministic assessment; it never files or exports an external claim."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from uuid import UUID
+
+from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import Session
+
+from recovery_manager.evidence import discover_assertions, prove_assertion
+from recovery_manager.ledger import Residual, residual_for_obligation
+from recovery_manager.models import (
+    AmountDerivation,
+    ClaimPursuit,
+    CurrentRecoveryRecommendation,
+    EconomicObligation,
+    PolicySourceVersion,
+    PursuitAllocation,
+    RecoveryAssessment,
+    SyntheticPacketReservation,
+    TenantState,
+)
+
+
+@dataclass(frozen=True)
+class SyntheticMechanicsAuthority:
+    """Explicit, injected authority for the separately labelled mechanics fixture.
+
+    This is deliberately not inferred from a policy name, amount, event subtype,
+    or a tenant-provided database field.  Production configuration does not
+    construct this object while synthetic mechanics remains disabled.
+    """
+
+    org_id: str
+    fixture_profile: str
+    fixture_sha256: str
+
+
+@dataclass(frozen=True)
+class CurrentAssessmentView:
+    assessment: RecoveryAssessment
+    state: str
+
+
+def derived_recommendation(residual: Residual, prerequisites: bool) -> tuple[str, int | None]:
+    """Derive a recommendation from known ledger state; never clamp conflicts."""
+    if not prerequisites or residual.justified_entitlement_minor is None:
+        return "REVIEW", None
+    entitlement = residual.justified_entitlement_minor
+    if residual.allocated_settlement_minor > entitlement:
+        return "REVIEW", None
+    if residual.allocated_settlement_minor == entitlement:
+        return "RESOLVED", None
+    if residual.active_pursuit_minor > entitlement - residual.allocated_settlement_minor:
+        return "REVIEW", None
+    if residual.active_pursuit_minor == entitlement - residual.allocated_settlement_minor:
+        return "ALREADY_PURSUED", None
+    if residual.remaining_minor is None or residual.remaining_minor <= 0:
+        return "REVIEW", None
+    return "SYNTHETIC_CLAIM_READY", residual.remaining_minor
+
+
+def current_assessment(
+    session: Session, org_id: str, obligation_id: UUID
+) -> CurrentAssessmentView | None:
+    """Read the current pointer without presenting a stale result as actionable."""
+    pointer = session.execute(
+        select(CurrentRecoveryRecommendation).where(
+            CurrentRecoveryRecommendation.org_id == org_id,
+            CurrentRecoveryRecommendation.obligation_id == obligation_id,
+        )
+    ).scalar_one_or_none()
+    if pointer is None:
+        return None
+    assessment = session.execute(
+        select(RecoveryAssessment).where(
+            RecoveryAssessment.org_id == org_id,
+            RecoveryAssessment.id == pointer.assessment_id,
+        )
+    ).scalar_one()
+    revision = session.execute(
+        select(TenantState.decision_revision).where(TenantState.org_id == org_id)
+    ).scalar_one()
+    return CurrentAssessmentView(
+        assessment=assessment,
+        state="CURRENT" if assessment.tenant_revision == revision else "STALE",
+    )
+
+
+def assess_synthetic(
+    session: Session,
+    org_id: str,
+    obligation_id: UUID,
+    subject_key: str,
+    proposition_key: str,
+    *,
+    synthetic_capability_enabled: bool = False,
+    synthetic_authority: SyntheticMechanicsAuthority | None = None,
+) -> RecoveryAssessment:
+    revision = int(
+        session.execute(text("SELECT public.lock_current_tenant_revision()")).scalar_one()
+    )
+    obligation = session.execute(
+        select(EconomicObligation).where(
+            EconomicObligation.org_id == org_id, EconomicObligation.id == obligation_id
+        )
+    ).scalar_one()
+    derivation = session.execute(
+        select(AmountDerivation)
+        .where(AmountDerivation.org_id == org_id, AmountDerivation.obligation_id == obligation_id)
+        .order_by(AmountDerivation.derivation_version.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    found = discover_assertions(session, org_id, subject_key, proposition_key, limit=100)
+    residual = residual_for_obligation(session, org_id, obligation_id)
+    source_basis = derivation.source_basis if derivation is not None else {}
+    policy_key = source_basis.get("synthetic_policy_key")
+    fixture_profile = source_basis.get("fixture_profile")
+    fixture_sha256 = source_basis.get("fixture_sha256")
+    policy = (
+        session.execute(
+            select(PolicySourceVersion).where(
+                PolicySourceVersion.org_id == org_id,
+                PolicySourceVersion.policy_key == policy_key,
+                PolicySourceVersion.authority_class == "SYNTHETIC",
+            )
+        ).scalar_one_or_none()
+        if isinstance(policy_key, str)
+        else None
+    )
+    policy_applies = (
+        policy is not None
+        and synthetic_authority is not None
+        and synthetic_authority.org_id == org_id
+        and synthetic_authority.fixture_profile == fixture_profile
+        and synthetic_authority.fixture_sha256 == fixture_sha256
+        and policy.applicability.get("fixture_profile") == fixture_profile
+        and policy.applicability.get("fixture_sha256") == fixture_sha256
+        and policy.applicability.get("proposition_key") == proposition_key
+        and obligation.business_instance.get("fixture_profile") == fixture_profile
+        and obligation.business_instance.get("fixture_sha256") == fixture_sha256
+        and (policy.effective_from is None or policy.effective_from <= datetime.now(UTC))
+        and (policy.effective_to is None or policy.effective_to >= datetime.now(UTC))
+    )
+    decisive = tuple(assertion for assertion in found.assertions if assertion.decisive)
+    prerequisites = (
+        synthetic_capability_enabled
+        and derivation is not None
+        and derivation.basis_class == "SYNTHETIC_ONLY"
+        and residual.remaining_minor is not None
+        and found.complete
+        and not found.conflict_present
+        and policy_applies
+        and bool(decisive)
+        and all(assertion.scope.get("coverage") == "KNOWN" for assertion in decisive)
+        and all(
+            prove_assertion(session, org_id, assertion).mechanically_supported
+            for assertion in decisive
+        )
+    )
+    conclusion, amount = derived_recommendation(residual, prerequisites)
+    result = RecoveryAssessment(
+        org_id=org_id,
+        obligation_id=obligation.id,
+        tenant_revision=revision,
+        conclusion=conclusion,
+        recoverable_minor=amount,
+        currency=residual.currency if amount is not None else None,
+        dependency_snapshot={
+            "tenant_revision": revision,
+            "derivation_id": str(derivation.id) if derivation else None,
+            "assertion_ids": [str(x.id) for x in found.assertions],
+            "retrieval_complete": found.complete,
+        },
+    )
+    session.add(result)
+    session.flush()
+    session.execute(
+        insert(CurrentRecoveryRecommendation)
+        .values(org_id=org_id, obligation_id=obligation.id, assessment_id=result.id)
+        .on_conflict_do_update(
+            index_elements=["org_id", "obligation_id"], set_={"assessment_id": result.id}
+        )
+    )
+    return result
+
+
+def reserve_synthetic_packet(
+    session: Session, org_id: str, assessment_id: UUID, idempotency_key: str
+) -> SyntheticPacketReservation:
+    existing = session.execute(
+        select(SyntheticPacketReservation).where(
+            SyntheticPacketReservation.org_id == org_id,
+            SyntheticPacketReservation.idempotency_key == idempotency_key,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        if existing.assessment_id != assessment_id:
+            raise ValueError("Export idempotency key conflicts with another assessment")
+        return existing
+    # The tenant revision lock is the first authoritative lock in both
+    # publication and export.  The preliminary idempotency lookup above is
+    # only a fast path; it is repeated after this lock before any reservation.
+    revision = int(
+        session.execute(text("SELECT public.lock_current_tenant_revision()")).scalar_one()
+    )
+    existing = session.execute(
+        select(SyntheticPacketReservation)
+        .where(
+            SyntheticPacketReservation.org_id == org_id,
+            SyntheticPacketReservation.idempotency_key == idempotency_key,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        if existing.assessment_id != assessment_id:
+            raise ValueError("Export idempotency key conflicts with another assessment")
+        return existing
+    assessment = session.execute(
+        select(RecoveryAssessment).where(
+            RecoveryAssessment.org_id == org_id, RecoveryAssessment.id == assessment_id
+        )
+    ).scalar_one()
+    if assessment.conclusion != "SYNTHETIC_CLAIM_READY" or assessment.tenant_revision != revision:
+        raise ValueError("Assessment is not current synthetic claim-ready")
+    current = session.execute(
+        select(CurrentRecoveryRecommendation)
+        .where(
+            CurrentRecoveryRecommendation.org_id == org_id,
+            CurrentRecoveryRecommendation.obligation_id == assessment.obligation_id,
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+    if current is None or current.assessment_id != assessment.id:
+        raise ValueError("Assessment is historical or stale")
+    pursuit = ClaimPursuit(
+        org_id=org_id,
+        external_reference=None,
+        status="EXPORTED",
+        currency=assessment.currency,
+        declared_minor=assessment.recoverable_minor,
+    )
+    session.add(pursuit)
+    session.flush()
+    session.add(
+        PursuitAllocation(
+            org_id=org_id,
+            pursuit_id=pursuit.id,
+            obligation_id=assessment.obligation_id,
+            allocated_minor=assessment.recoverable_minor,
+        )
+    )
+    session.flush()
+    packet = SyntheticPacketReservation(
+        org_id=org_id,
+        assessment_id=assessment.id,
+        idempotency_key=idempotency_key,
+        pursuit_id=pursuit.id,
+        packet={
+            "synthetic_only": True,
+            "assessment_id": str(assessment.id),
+            "amount_minor": assessment.recoverable_minor,
+            "currency": assessment.currency,
+            "snapshot": assessment.dependency_snapshot,
+        },
+    )
+    session.add(packet)
+    session.flush()
+    return packet

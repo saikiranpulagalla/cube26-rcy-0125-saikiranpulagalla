@@ -13,11 +13,18 @@ from recovery_manager.db import make_engine, make_session_factory, set_local_ten
 
 @pytest.fixture(scope="session")
 def settings() -> Settings:
+    mandatory = os.environ.get("RECOVERY_REQUIRE_POSTGRES", "").lower() == "true"
+    test_runtime = os.environ.get("TEST_RUNTIME_DATABASE_URL")
+    test_owner = os.environ.get("TEST_OWNER_DATABASE_URL")
+    if mandatory and (not test_runtime or not test_owner):
+        raise pytest.UsageError("TEST CONFIGURATION ERROR: explicit runtime and owner test URLs are required")
+    if test_owner and not ("/astra_" in test_owner or test_owner.rstrip("/").endswith("_test")):
+        raise pytest.UsageError("TEST CONFIGURATION ERROR: owner URL is not an isolated test database")
     return Settings(
-        database_url=os.environ.get(
+        database_url=test_runtime or os.environ.get(
             "RECOVERY_DATABASE_URL", "postgresql+psycopg://recovery_app:change-me@localhost:5432/recovery"
         ),
-        migration_database_url=os.environ.get(
+        migration_database_url=test_owner or os.environ.get(
             "RECOVERY_MIGRATION_DATABASE_URL", "postgresql+psycopg://recovery_owner:change-me@localhost:5432/recovery"
         ),
         worker_database_url=os.environ.get(
@@ -52,7 +59,7 @@ def runtime_factory(settings: Settings, postgres_available: bool) -> sessionmake
     with owner.begin() as connection:
         connection.execute(
             text(
-                "TRUNCATE evidence_lifecycle_event, evidence_assertion, policy_source_version, pursuit_allocation, claim_pursuit, settlement_reversal, settlement_allocation, "
+                "TRUNCATE current_recovery_recommendation, synthetic_packet_reservation, recovery_assessment, evidence_lifecycle_event, evidence_assertion, policy_source_version, pursuit_allocation, claim_pursuit, settlement_reversal, settlement_allocation, "
                 "amount_derivation, economic_obligation, evidence_record, financial_event, source_record_version, audit_event, "
                 "work_attempt, work_intent, raw_envelope, tenant_state CASCADE"
             )

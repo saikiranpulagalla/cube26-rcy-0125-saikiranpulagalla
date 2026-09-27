@@ -548,3 +548,81 @@ class PolicySourceVersion(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class RecoveryAssessment(Base):
+    __tablename__ = "recovery_assessment"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "obligation_id"],
+            ["economic_obligation.org_id", "economic_obligation.id"],
+            name="fk_assessment_obligation_tenant",
+        ),
+        UniqueConstraint("org_id", "id", name="uq_recovery_assessment_org_id"),
+        CheckConstraint(
+            "conclusion IN ('REVIEW', 'NO_CLAIM', 'RESOLVED', 'ALREADY_PURSUED', 'SYNTHETIC_CLAIM_READY')",
+            name="ck_assessment_conclusion",
+        ),
+        CheckConstraint(
+            "recoverable_minor IS NULL OR recoverable_minor > 0",
+            name="ck_assessment_amount_positive",
+        ),
+    )
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    obligation_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    tenant_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    conclusion: Mapped[str] = mapped_column(String(32), nullable=False)
+    recoverable_minor: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    dependency_snapshot: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class SyntheticPacketReservation(Base):
+    __tablename__ = "synthetic_packet_reservation"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "assessment_id"],
+            ["recovery_assessment.org_id", "recovery_assessment.id"],
+            name="fk_packet_assessment_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "pursuit_id"],
+            ["claim_pursuit.org_id", "claim_pursuit.id"],
+            name="fk_packet_pursuit_tenant",
+        ),
+        UniqueConstraint("org_id", "assessment_id", name="uq_packet_assessment_tenant"),
+        UniqueConstraint("org_id", "idempotency_key", name="uq_packet_org_idempotency"),
+    )
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    assessment_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    pursuit_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    packet: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class CurrentRecoveryRecommendation(Base):
+    __tablename__ = "current_recovery_recommendation"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "obligation_id"],
+            ["economic_obligation.org_id", "economic_obligation.id"],
+            name="fk_current_obligation_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "assessment_id"],
+            ["recovery_assessment.org_id", "recovery_assessment.id"],
+            name="fk_current_assessment_tenant",
+        ),
+        UniqueConstraint("org_id", "assessment_id", name="uq_current_assessment_tenant"),
+    )
+    org_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    obligation_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    assessment_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)

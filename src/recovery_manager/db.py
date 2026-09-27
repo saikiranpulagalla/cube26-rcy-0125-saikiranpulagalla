@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from recovery_manager.config import Settings
 
-EXPECTED_MIGRATION_HEAD = "0007_v04_evidence_policy"
+EXPECTED_MIGRATION_HEAD = "0012_v05_assessment_outcomes"
 
 
 def make_engine(settings: Settings, *, worker: bool = False) -> Engine:
@@ -83,8 +83,9 @@ def assert_runtime_ready(engine: Engine, settings: Settings, *, required_role: s
                 "('tenant_state', 'raw_envelope', 'work_intent', 'work_attempt', 'audit_event', "
                 "'source_record_version', 'financial_event', 'evidence_record', 'economic_obligation', "
                 "'amount_derivation', 'settlement_allocation', 'settlement_reversal', 'claim_pursuit', "
-                "'pursuit_allocation', 'evidence_assertion', 'evidence_lifecycle_event', 'policy_source_version')"
+                "'pursuit_allocation', 'evidence_assertion', 'evidence_lifecycle_event', 'policy_source_version', "
+                "'recovery_assessment', 'synthetic_packet_reservation', 'current_recovery_recommendation')"
             )
         ).mappings().all()
-        if len(protected) != 17 or any(not row["relrowsecurity"] or not row["relforcerowsecurity"] for row in protected):
+        if len(protected) != 20 or any(not row["relrowsecurity"] or not row["relforcerowsecurity"] for row in protected):
             raise RuntimeError("Protected table RLS is incomplete")
