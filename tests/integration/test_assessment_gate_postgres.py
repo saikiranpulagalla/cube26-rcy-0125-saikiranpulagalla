@@ -18,6 +18,7 @@ from recovery_manager.models import (
     EconomicObligation,
     EvidenceAssertion,
     EvidenceRecord,
+    FinancialEvent,
     PolicySourceVersion,
     SourceRecordVersion,
     SyntheticFixtureProfile,
@@ -38,7 +39,11 @@ def _register_synthetic_profile(settings, org_id: str) -> None:
             content_sha256="b" * 64,
             effective_from=None,
             effective_to=None,
-            applicability={**provenance, "proposition_key": "synthetic-invalid-fee"},
+            applicability={
+                **provenance,
+                "proposition_key": "synthetic-invalid-fee",
+                "permitted_amount_minor": 800,
+            },
             raw_text="SYNTHETIC MECHANICS — NOT ORGANIZER GROUND TRUTH OR REAL CHANNEL POLICY",
             lifecycle_state="ACTIVE",
         )
@@ -138,6 +143,23 @@ def test_trusted_synthetic_control_is_ready_for_two_dollars(
         )
         session.add(source)
         session.flush()
+        event = FinancialEvent(
+            org_id=synthetic_org,
+            source_record_version_id=source.id,
+            event_type="SYNTHETIC_FEE",
+            direction="DEBIT",
+            amount_minor=1000,
+            currency="USD",
+            quantity=1,
+            posting_time=None,
+            posting_time_precision=None,
+            incident_time=None,
+            incident_time_precision=None,
+            business_references={"synthetic_fixture": "SYN-FEE-001"},
+            normalized_fields={"synthetic": True},
+        )
+        session.add(event)
+        session.flush()
         evidence = EvidenceRecord(
             org_id=synthetic_org,
             source_record_version_id=source.id,
@@ -153,6 +175,7 @@ def test_trusted_synthetic_control_is_ready_for_two_dollars(
         obligation = EconomicObligation(
             org_id=synthetic_org,
             economic_key="SYN-FEE-001",
+            financial_event_id=event.id,
             recovery_basis="INVALID_FEE",
             currency="USD",
             business_instance=provenance,
@@ -160,6 +183,20 @@ def test_trusted_synthetic_control_is_ready_for_two_dollars(
         )
         session.add(obligation)
         session.flush()
+        with pytest.raises(DBAPIError):
+            with session.begin_nested():
+                session.add(
+                    EconomicObligation(
+                        org_id=synthetic_org,
+                        economic_key="SYN-FEE-001-DUPLICATE",
+                        financial_event_id=event.id,
+                        recovery_basis="INVALID_FEE",
+                        currency="USD",
+                        business_instance=provenance,
+                        quantity_scope={"coverage": "KNOWN", "quantity": "1"},
+                    )
+                )
+                session.flush()
         session.add(
             EvidenceAssertion(
                 org_id=synthetic_org,
@@ -229,6 +266,31 @@ def test_trusted_synthetic_control_is_ready_for_two_dollars(
         assert view is not None
         assert view.state == "STALE"
 
+        session.add(
+            AmountDerivation(
+                org_id=synthetic_org,
+                obligation_id=obligation.id,
+                derivation_version=2,
+                currency="USD",
+                observed_amount_minor=1000,
+                expected_amount_minor=800,
+                justified_entitlement_minor=300,
+                rounding_rule="integer minor units",
+                basis_class="SYNTHETIC_ONLY",
+                source_basis=provenance,
+            )
+        )
+        session.flush()
+        forged_entitlement = assess_synthetic(
+            session,
+            synthetic_org,
+            obligation.id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
+        assert forged_entitlement.conclusion == "REVIEW"
+
         with pytest.raises(DBAPIError):
             with session.begin_nested():
                 session.execute(
@@ -244,7 +306,7 @@ def test_trusted_synthetic_control_is_ready_for_two_dollars(
             AmountDerivation(
                 org_id=synthetic_org,
                 obligation_id=obligation.id,
-                derivation_version=2,
+                derivation_version=3,
                 currency="USD",
                 observed_amount_minor=1000,
                 expected_amount_minor=800,

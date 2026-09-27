@@ -17,6 +17,7 @@ from recovery_manager.models import (
     ClaimPursuit,
     CurrentRecoveryRecommendation,
     EconomicObligation,
+    FinancialEvent,
     PolicySourceVersion,
     PursuitAllocation,
     RecoveryAssessment,
@@ -30,6 +31,30 @@ from recovery_manager.models import (
 class CurrentAssessmentView:
     assessment: RecoveryAssessment
     state: str
+
+
+def _matches_pinned_synthetic_derivation(
+    obligation: EconomicObligation,
+    derivation: AmountDerivation | None,
+    financial_event: FinancialEvent | None,
+    policy: PolicySourceVersion | None,
+) -> bool:
+    """Validate every numeric input to the synthetic $observed - $permitted rule."""
+    permitted = policy.applicability.get("permitted_amount_minor") if policy else None
+    if (
+        derivation is None
+        or financial_event is None
+        or financial_event.direction != "DEBIT"
+        or not isinstance(permitted, int)
+        or permitted < 0
+        or financial_event.currency != obligation.currency
+        or derivation.currency != obligation.currency
+        or derivation.observed_amount_minor != financial_event.amount_minor
+        or derivation.expected_amount_minor != permitted
+        or financial_event.amount_minor < permitted
+    ):
+        return False
+    return derivation.justified_entitlement_minor == financial_event.amount_minor - permitted
 
 
 def derived_recommendation(residual: Residual, prerequisites: bool) -> tuple[str, int | None]:
@@ -100,6 +125,16 @@ def assess_synthetic(
         .order_by(AmountDerivation.derivation_version.desc())
         .limit(1)
     ).scalar_one_or_none()
+    financial_event = (
+        session.execute(
+            select(FinancialEvent).where(
+                FinancialEvent.org_id == org_id,
+                FinancialEvent.id == obligation.financial_event_id,
+            )
+        ).scalar_one_or_none()
+        if obligation.financial_event_id is not None
+        else None
+    )
     found = discover_assertions(session, org_id, subject_key, proposition_key, limit=100)
     residual = residual_for_obligation(session, org_id, obligation_id)
     source_basis = derivation.source_basis if derivation is not None else {}
@@ -143,10 +178,12 @@ def assess_synthetic(
         synthetic_capability_enabled
         and derivation is not None
         and derivation.basis_class == "SYNTHETIC_ONLY"
+        and obligation.recovery_basis == "INVALID_FEE"
         and residual.remaining_minor is not None
         and found.complete
         and not found.conflict_present
         and policy_applies
+        and _matches_pinned_synthetic_derivation(obligation, derivation, financial_event, policy)
         and bool(decisive)
         and all(assertion.scope.get("coverage") == "KNOWN" for assertion in decisive)
         and all(

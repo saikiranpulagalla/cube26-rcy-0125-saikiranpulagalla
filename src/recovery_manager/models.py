@@ -10,6 +10,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKeyConstraint,
+    Index,
     Integer,
     LargeBinary,
     Numeric,
@@ -17,6 +18,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -294,6 +296,14 @@ class EconomicObligation(Base):
             name="fk_obligation_financial_event_tenant",
         ),
         UniqueConstraint("org_id", "economic_key", name="uq_obligation_economic_key"),
+        Index(
+            "uq_obligation_financial_basis",
+            "org_id",
+            "financial_event_id",
+            "recovery_basis",
+            unique=True,
+            postgresql_where=text("financial_event_id IS NOT NULL"),
+        ),
         UniqueConstraint("org_id", "id", name="uq_obligation_org_id"),
         CheckConstraint("btrim(org_id) <> ''", name="ck_obligation_org_nonempty"),
         CheckConstraint(
@@ -559,6 +569,7 @@ class SyntheticFixtureProfile(Base):
             ["policy_source_version.org_id", "policy_source_version.id"],
             name="fk_synthetic_profile_policy_tenant",
         ),
+        UniqueConstraint("org_id", "fixture_sha256", name="uq_synthetic_profile_hash_tenant"),
     )
 
     org_id: Mapped[str] = mapped_column(String(128), primary_key=True)
