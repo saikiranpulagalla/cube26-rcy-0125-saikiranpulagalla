@@ -20,23 +20,10 @@ from recovery_manager.models import (
     PolicySourceVersion,
     PursuitAllocation,
     RecoveryAssessment,
+    SyntheticFixtureProfile,
     SyntheticPacketReservation,
     TenantState,
 )
-
-
-@dataclass(frozen=True)
-class SyntheticMechanicsAuthority:
-    """Explicit, injected authority for the separately labelled mechanics fixture.
-
-    This is deliberately not inferred from a policy name, amount, event subtype,
-    or a tenant-provided database field.  Production configuration does not
-    construct this object while synthetic mechanics remains disabled.
-    """
-
-    org_id: str
-    fixture_profile: str
-    fixture_sha256: str
 
 
 @dataclass(frozen=True)
@@ -98,7 +85,6 @@ def assess_synthetic(
     proposition_key: str,
     *,
     synthetic_capability_enabled: bool = False,
-    synthetic_authority: SyntheticMechanicsAuthority | None = None,
 ) -> RecoveryAssessment:
     revision = int(
         session.execute(text("SELECT public.lock_current_tenant_revision()")).scalar_one()
@@ -117,26 +103,33 @@ def assess_synthetic(
     found = discover_assertions(session, org_id, subject_key, proposition_key, limit=100)
     residual = residual_for_obligation(session, org_id, obligation_id)
     source_basis = derivation.source_basis if derivation is not None else {}
-    policy_key = source_basis.get("synthetic_policy_key")
     fixture_profile = source_basis.get("fixture_profile")
     fixture_sha256 = source_basis.get("fixture_sha256")
+    profile = (
+        session.execute(
+            select(SyntheticFixtureProfile).where(
+                SyntheticFixtureProfile.org_id == org_id,
+                SyntheticFixtureProfile.fixture_profile == fixture_profile,
+                SyntheticFixtureProfile.fixture_sha256 == fixture_sha256,
+            )
+        ).scalar_one_or_none()
+        if isinstance(fixture_profile, str) and isinstance(fixture_sha256, str)
+        else None
+    )
     policy = (
         session.execute(
             select(PolicySourceVersion).where(
                 PolicySourceVersion.org_id == org_id,
-                PolicySourceVersion.policy_key == policy_key,
+                PolicySourceVersion.id == profile.policy_source_version_id,
                 PolicySourceVersion.authority_class == "SYNTHETIC",
+                PolicySourceVersion.lifecycle_state == "ACTIVE",
             )
         ).scalar_one_or_none()
-        if isinstance(policy_key, str)
+        if profile is not None
         else None
     )
     policy_applies = (
         policy is not None
-        and synthetic_authority is not None
-        and synthetic_authority.org_id == org_id
-        and synthetic_authority.fixture_profile == fixture_profile
-        and synthetic_authority.fixture_sha256 == fixture_sha256
         and policy.applicability.get("fixture_profile") == fixture_profile
         and policy.applicability.get("fixture_sha256") == fixture_sha256
         and policy.applicability.get("proposition_key") == proposition_key

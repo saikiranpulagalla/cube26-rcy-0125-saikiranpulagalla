@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from recovery_manager.config import Settings
 
-EXPECTED_MIGRATION_HEAD = "0014_current_pointer_lock"
+EXPECTED_MIGRATION_HEAD = "0015_trusted_synthetic_authority"
 
 
 def make_engine(settings: Settings, *, worker: bool = False) -> Engine:

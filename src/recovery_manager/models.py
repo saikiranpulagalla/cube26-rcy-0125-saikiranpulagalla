@@ -545,9 +545,26 @@ class PolicySourceVersion(Base):
     effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     applicability: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
     raw_text: Mapped[str] = mapped_column(Text, nullable=False)
+    lifecycle_state: Mapped[str] = mapped_column(String(16), nullable=False, default="ACTIVE")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class SyntheticFixtureProfile(Base):
+    __tablename__ = "synthetic_fixture_profile"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "policy_source_version_id"],
+            ["policy_source_version.org_id", "policy_source_version.id"],
+            name="fk_synthetic_profile_policy_tenant",
+        ),
+    )
+
+    org_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    fixture_profile: Mapped[str] = mapped_column(String(128), primary_key=True)
+    fixture_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    policy_source_version_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
 
 
 class RecoveryAssessment(Base):

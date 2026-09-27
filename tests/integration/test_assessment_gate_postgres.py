@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import create_engine, update
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.orm import sessionmaker
 
 from recovery_manager.assessment import (
-    SyntheticMechanicsAuthority,
     assess_synthetic,
     current_assessment,
     reserve_synthetic_packet,
@@ -18,7 +20,38 @@ from recovery_manager.models import (
     EvidenceRecord,
     PolicySourceVersion,
     SourceRecordVersion,
+    SyntheticFixtureProfile,
 )
+
+
+def _register_synthetic_profile(settings, org_id: str) -> None:
+    owner_factory = sessionmaker(
+        bind=create_engine(settings.migration_database_url, future=True), future=True
+    )
+    provenance = {"fixture_profile": "synthetic-mechanics-v1", "fixture_sha256": "a" * 64}
+    with owner_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        policy = PolicySourceVersion(
+            org_id=org_id,
+            policy_key="SYN-VALID-FEE-8",
+            authority_class="SYNTHETIC",
+            content_sha256="b" * 64,
+            effective_from=None,
+            effective_to=None,
+            applicability={**provenance, "proposition_key": "synthetic-invalid-fee"},
+            raw_text="SYNTHETIC MECHANICS — NOT ORGANIZER GROUND TRUTH OR REAL CHANNEL POLICY",
+            lifecycle_state="ACTIVE",
+        )
+        session.add(policy)
+        session.flush()
+        session.add(
+            SyntheticFixtureProfile(
+                org_id=org_id,
+                fixture_profile=provenance["fixture_profile"],
+                fixture_sha256=provenance["fixture_sha256"],
+                policy_source_version_id=policy.id,
+            )
+        )
 
 
 def test_empty_decisive_evidence_cannot_produce_synthetic_ready(
@@ -82,6 +115,7 @@ def test_trusted_synthetic_control_is_ready_for_two_dollars(
     synthetic_principal = Principal(
         org_id=synthetic_org, actor_id="synthetic_fixture", role="fixture_admin"
     )
+    _register_synthetic_profile(settings, synthetic_org)
     with runtime_factory() as session, session.begin():
         set_local_tenant(session, synthetic_org)
         accept_input(
@@ -94,18 +128,6 @@ def test_trusted_synthetic_control_is_ready_for_two_dollars(
             settings,
         )
         provenance = {"fixture_profile": "synthetic-mechanics-v1", "fixture_sha256": "a" * 64}
-        session.add(
-            PolicySourceVersion(
-                org_id=synthetic_org,
-                policy_key="SYN-VALID-FEE-8",
-                authority_class="SYNTHETIC",
-                content_sha256="b" * 64,
-                effective_from=None,
-                effective_to=None,
-                applicability={**provenance, "proposition_key": "synthetic-invalid-fee"},
-                raw_text="SYNTHETIC MECHANICS — NOT ORGANIZER GROUND TRUTH OR REAL CHANNEL POLICY",
-            )
-        )
         source = SourceRecordVersion(
             org_id=synthetic_org,
             source_kind="synthetic",
@@ -163,40 +185,20 @@ def test_trusted_synthetic_control_is_ready_for_two_dollars(
                 justified_entitlement_minor=200,
                 rounding_rule="integer minor units",
                 basis_class="SYNTHETIC_ONLY",
-                source_basis={**provenance, "synthetic_policy_key": "SYN-VALID-FEE-8"},
+                source_basis=provenance,
             )
         )
         session.flush()
-        authority = SyntheticMechanicsAuthority(
-            org_id=synthetic_org,
-            fixture_profile="synthetic-mechanics-v1",
-            fixture_sha256="a" * 64,
-        )
         disabled = assess_synthetic(
             session,
             synthetic_org,
             obligation.id,
             "SYN-FEE-001",
             "synthetic-invalid-fee",
-            synthetic_authority=authority,
         )
         assert disabled.conclusion == "REVIEW"
         with pytest.raises(ValueError, match="not current synthetic claim-ready"):
             reserve_synthetic_packet(session, synthetic_org, disabled.id, "disabled-export")
-        mismatched_authority = assess_synthetic(
-            session,
-            synthetic_org,
-            obligation.id,
-            "SYN-FEE-001",
-            "synthetic-invalid-fee",
-            synthetic_capability_enabled=True,
-            synthetic_authority=SyntheticMechanicsAuthority(
-                org_id="org_demo_alpha",
-                fixture_profile="synthetic-mechanics-v1",
-                fixture_sha256="a" * 64,
-            ),
-        )
-        assert mismatched_authority.conclusion == "REVIEW"
         wrong_subject = assess_synthetic(
             session,
             synthetic_org,
@@ -204,7 +206,6 @@ def test_trusted_synthetic_control_is_ready_for_two_dollars(
             "other-business-instance",
             "synthetic-invalid-fee",
             synthetic_capability_enabled=True,
-            synthetic_authority=authority,
         )
         assert wrong_subject.conclusion == "REVIEW"
         assessment = assess_synthetic(
@@ -214,7 +215,6 @@ def test_trusted_synthetic_control_is_ready_for_two_dollars(
             "SYN-FEE-001",
             "synthetic-invalid-fee",
             synthetic_capability_enabled=True,
-            synthetic_authority=authority,
         )
         assert assessment.conclusion == "SYNTHETIC_CLAIM_READY"
         assert assessment.recoverable_minor == 200
@@ -228,3 +228,73 @@ def test_trusted_synthetic_control_is_ready_for_two_dollars(
         view = current_assessment(session, synthetic_org, obligation.id)
         assert view is not None
         assert view.state == "STALE"
+
+        with pytest.raises(DBAPIError):
+            with session.begin_nested():
+                session.execute(
+                    update(PolicySourceVersion)
+                    .where(
+                        PolicySourceVersion.org_id == synthetic_org,
+                        PolicySourceVersion.policy_key == "SYN-VALID-FEE-8",
+                    )
+                    .values(lifecycle_state="REVOKED")
+                )
+
+        session.add(
+            AmountDerivation(
+                org_id=synthetic_org,
+                obligation_id=obligation.id,
+                derivation_version=2,
+                currency="USD",
+                observed_amount_minor=1000,
+                expected_amount_minor=800,
+                justified_entitlement_minor=200,
+                rounding_rule="integer minor units",
+                basis_class="SYNTHETIC_ONLY",
+                source_basis={
+                    "fixture_profile": "synthetic-mechanics-v1",
+                    "fixture_sha256": "e" * 64,
+                },
+            )
+        )
+        session.flush()
+        unregistered_fixture = assess_synthetic(
+            session,
+            synthetic_org,
+            obligation.id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
+        assert unregistered_fixture.conclusion == "REVIEW"
+
+
+def test_runtime_cannot_register_synthetic_policy_authority(runtime_factory, settings) -> None:
+    org_id = "org_untrusted_synthetic_policy"
+    with runtime_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        accept_input(
+            session,
+            Principal(org_id=org_id, actor_id="runtime", role="operator"),
+            b"ordinary input",
+            "application/octet-stream",
+            "ordinary",
+            "untrusted-policy",
+            settings,
+        )
+        with pytest.raises(DBAPIError):
+            with session.begin_nested():
+                session.add(
+                    PolicySourceVersion(
+                        org_id=org_id,
+                        policy_key="SYN-VALID-FEE-8",
+                        authority_class="SYNTHETIC",
+                        content_sha256="d" * 64,
+                        effective_from=None,
+                        effective_to=None,
+                        applicability={"fixture_profile": "synthetic-mechanics-v1"},
+                        raw_text="forged synthetic authority",
+                        lifecycle_state="ACTIVE",
+                    )
+                )
+                session.flush()
