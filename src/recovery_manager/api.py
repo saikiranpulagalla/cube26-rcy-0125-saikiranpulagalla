@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from html import escape
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
+from recovery_manager.assessment import current_assessment
 from recovery_manager.auth import authenticate_development_credential
 from recovery_manager.capabilities import V01_CAPABILITIES
 from recovery_manager.config import Principal, Settings, get_settings
@@ -20,7 +23,16 @@ from recovery_manager.db import (
     set_local_tenant,
 )
 from recovery_manager.ingestion import IdempotencyConflict, accept_input
-from recovery_manager.models import RawEnvelope, TenantState, WorkIntent
+from recovery_manager.models import (
+    AmountDerivation,
+    ClaimPursuit,
+    EconomicObligation,
+    RawEnvelope,
+    RecoveryAssessment,
+    SyntheticPacketReservation,
+    TenantState,
+    WorkIntent,
+)
 
 
 def create_app(
@@ -176,6 +188,68 @@ def create_app(
                     status_code=status.HTTP_404_NOT_FOUND, detail="Import not found"
                 )
             return Response(content=envelope.raw_bytes, media_type=envelope.content_type)
+
+    @app.get("/review/assessments/{assessment_id}", response_class=HTMLResponse)
+    def review_assessment(
+        assessment_id: UUID, principal: Principal = Depends(principal_dependency)
+    ) -> HTMLResponse:
+        """Minimal read-only judge view; no human action changes a machine result."""
+        with current_factory() as session, session.begin():
+            set_local_tenant(session, principal.org_id)
+            assessment = session.execute(
+                select(RecoveryAssessment).where(
+                    RecoveryAssessment.org_id == principal.org_id,
+                    RecoveryAssessment.id == assessment_id,
+                )
+            ).scalar_one_or_none()
+            if assessment is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assessment not found")
+            obligation = session.execute(
+                select(EconomicObligation).where(
+                    EconomicObligation.org_id == principal.org_id,
+                    EconomicObligation.id == assessment.obligation_id,
+                )
+            ).scalar_one()
+            derivation = session.execute(
+                select(AmountDerivation)
+                .where(
+                    AmountDerivation.org_id == principal.org_id,
+                    AmountDerivation.obligation_id == obligation.id,
+                )
+                .order_by(AmountDerivation.derivation_version.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            current = current_assessment(session, principal.org_id, obligation.id)
+            state = current.state if current is not None and current.assessment.id == assessment.id else "HISTORICAL"
+            packet = session.execute(
+                select(SyntheticPacketReservation).where(
+                    SyntheticPacketReservation.org_id == principal.org_id,
+                    SyntheticPacketReservation.assessment_id == assessment.id,
+                )
+            ).scalar_one_or_none()
+            pursuits = session.execute(
+                select(ClaimPursuit.status).where(ClaimPursuit.org_id == principal.org_id)
+            ).scalars().all()
+        amount = (
+            "—"
+            if assessment.recoverable_minor is None
+            else f"{assessment.currency} {assessment.recoverable_minor // 100}.{assessment.recoverable_minor % 100:02d}"
+        )
+        derivation_text = "unavailable" if derivation is None else (
+            f"observed={derivation.observed_amount_minor}; expected={derivation.expected_amount_minor}; "
+            f"entitlement={derivation.justified_entitlement_minor}; rule={derivation.rounding_rule}"
+        )
+        body = f"""<!doctype html><title>Recovery review</title><main>
+<h1>Recovery assessment</h1><p><strong>{escape(assessment.conclusion)}</strong> · {escape(state)} · {escape(amount)}</p>
+<dl><dt>Capability</dt><dd>SYNTHETIC_ONLY; operational policy and AI are DISABLED.</dd>
+<dt>Obligation</dt><dd>{escape(obligation.economic_key)} / {escape(obligation.recovery_basis)}</dd>
+<dt>Quantity scope</dt><dd>{escape(str(obligation.quantity_scope))}</dd>
+<dt>Amount derivation</dt><dd>{escape(derivation_text)}</dd>
+<dt>Snapshot</dt><dd>{escape(str(assessment.dependency_snapshot))}</dd>
+<dt>Pursuit states</dt><dd>{escape(', '.join(pursuits) or 'none')}</dd>
+<dt>Packet</dt><dd>{'exported historical packet' if packet else 'not exported'}</dd>
+</dl><p>Machine assessment is immutable. This view provides no force-claim action.</p></main>"""
+        return HTMLResponse(body)
 
     return app
 
