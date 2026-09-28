@@ -145,9 +145,38 @@ def current_assessment(
     revision = session.execute(
         select(TenantState.decision_revision).where(TenantState.org_id == org_id)
     ).scalar_one()
+    actionable = assessment.conclusion != "SYNTHETIC_CLAIM_READY" or _snapshot_policy_is_actionable(
+        session, org_id, assessment.dependency_snapshot, datetime.now(UTC)
+    )
     return CurrentAssessmentView(
         assessment=assessment,
-        state="CURRENT" if assessment.tenant_revision == revision else "STALE",
+        state="CURRENT" if assessment.tenant_revision == revision and actionable else "STALE",
+    )
+
+
+def _snapshot_policy_is_actionable(
+    session: Session, org_id: str, snapshot: dict[str, object], as_of: datetime
+) -> bool:
+    """Fail closed unless the exact policy pinned at assessment time remains usable."""
+    policy_id = snapshot.get("policy_source_version_id")
+    if not isinstance(policy_id, str):
+        return False
+    try:
+        policy_uuid = UUID(policy_id)
+    except ValueError:
+        return False
+    policy = session.execute(
+        select(PolicySourceVersion).where(
+            PolicySourceVersion.org_id == org_id,
+            PolicySourceVersion.id == policy_uuid,
+            PolicySourceVersion.authority_class == "SYNTHETIC",
+            PolicySourceVersion.lifecycle_state == "ACTIVE",
+        )
+    ).scalar_one_or_none()
+    return (
+        policy is not None
+        and (policy.effective_from is None or policy.effective_from <= as_of)
+        and (policy.effective_to is None or policy.effective_to >= as_of)
     )
 
 
@@ -160,6 +189,7 @@ def assess_synthetic(
     *,
     synthetic_capability_enabled: bool = False,
 ) -> RecoveryAssessment:
+    as_of = datetime.now(UTC)
     revision = int(
         session.execute(text("SELECT public.lock_current_tenant_revision()")).scalar_one()
     )
@@ -196,37 +226,39 @@ def assess_synthetic(
     )
     found = discover_assertions(session, org_id, subject_key, proposition_key, limit=100)
     residual = residual_for_obligation(session, org_id, obligation_id)
-    reconciliation: dict[str, tuple[str, datetime | None]] = {}
-    for domain, state, cutoff in session.execute(
+    reconciliation: dict[str, tuple[UUID, str, datetime | None, str]] = {}
+    for reconciliation_id, domain, state, cutoff, source_set_sha256 in session.execute(
         select(
+            ReconciliationState.id,
             ReconciliationState.domain,
             ReconciliationState.state,
             ReconciliationState.cutoff,
+            ReconciliationState.source_set_sha256,
         ).where(
             ReconciliationState.org_id == org_id,
             ReconciliationState.obligation_id == obligation_id,
         )
     ).tuples():
-        reconciliation[domain] = (state, cutoff)
+        reconciliation[domain] = (reconciliation_id, state, cutoff, source_set_sha256)
     def complete_reconciliation(domain: str) -> bool:
         state_and_cutoff = reconciliation.get(domain)
         if state_and_cutoff is None:
             return False
-        state, cutoff = state_and_cutoff
+        _, state, cutoff, _ = state_and_cutoff
         return (
             state in {"RECONCILED_NONE", "RECONCILED_COMPLETE"}
             and cutoff is not None
-            and cutoff <= datetime.now(UTC)
+            and cutoff <= as_of
         )
 
     reconciliation_complete = all(
         complete_reconciliation(domain) for domain in ("SETTLEMENT", "PURSUIT")
     )
     reconciliation_consistent = not (
-        reconciliation.get("SETTLEMENT", ("UNKNOWN", None))[0] == "RECONCILED_NONE"
+        reconciliation.get("SETTLEMENT", (None, "UNKNOWN", None, ""))[1] == "RECONCILED_NONE"
         and residual.allocated_settlement_minor != 0
     ) and not (
-        reconciliation.get("PURSUIT", ("UNKNOWN", None))[0] == "RECONCILED_NONE"
+        reconciliation.get("PURSUIT", (None, "UNKNOWN", None, ""))[1] == "RECONCILED_NONE"
         and residual.active_pursuit_minor != 0
     )
     source_basis = derivation.source_basis if derivation is not None else {}
@@ -265,8 +297,8 @@ def assess_synthetic(
         and policy.applicability.get("proposition_key") == proposition_key
         and obligation.business_instance.get("fixture_profile") == fixture_profile
         and obligation.business_instance.get("fixture_sha256") == fixture_sha256
-        and (policy.effective_from is None or policy.effective_from <= datetime.now(UTC))
-        and (policy.effective_to is None or policy.effective_to >= datetime.now(UTC))
+        and (policy.effective_from is None or policy.effective_from <= as_of)
+        and (policy.effective_to is None or policy.effective_to >= as_of)
     )
     decisive = tuple(assertion for assertion in found.assertions if assertion.decisive)
     prerequisites = (
@@ -294,8 +326,90 @@ def assess_synthetic(
     assessment_id = uuid4()
     snapshot = {
         "tenant_revision": revision,
-        "derivation_id": str(derivation.id) if derivation else None,
-        "assertion_ids": [str(x.id) for x in found.assertions],
+        "assessment_as_of": as_of.isoformat(),
+        "obligation": {
+            "id": str(obligation.id),
+            "financial_event_id": str(obligation.financial_event_id)
+            if obligation.financial_event_id
+            else None,
+            "economic_key": obligation.economic_key,
+            "recovery_basis": obligation.recovery_basis,
+            "currency": obligation.currency,
+            "quantity_scope": obligation.quantity_scope,
+        },
+        "financial_event": {
+            "id": str(financial_event.id),
+            "source_record_version_id": str(financial_event.source_record_version_id),
+            "direction": financial_event.direction,
+            "amount_minor": financial_event.amount_minor,
+            "currency": financial_event.currency,
+            "quantity": str(financial_event.quantity) if financial_event.quantity is not None else None,
+        }
+        if financial_event
+        else None,
+        "amount_derivation": {
+            "id": str(derivation.id),
+            "version": derivation.derivation_version,
+            "currency": derivation.currency,
+            "observed_amount_minor": derivation.observed_amount_minor,
+            "expected_amount_minor": derivation.expected_amount_minor,
+            "justified_entitlement_minor": derivation.justified_entitlement_minor,
+            "source_basis": derivation.source_basis,
+        }
+        if derivation
+        else None,
+        "trusted_fixture_profile": {
+            "fixture_profile": profile.fixture_profile,
+            "fixture_sha256": profile.fixture_sha256,
+            "policy_source_version_id": str(profile.policy_source_version_id),
+            "actual_source_record_version_id": str(fixture_source.id) if fixture_source else None,
+            "actual_source_sha256": fixture_source.content_sha256 if fixture_source else None,
+        }
+        if profile
+        else None,
+        "policy_source_version_id": str(policy.id) if policy else None,
+        "policy": {
+            "id": str(policy.id),
+            "policy_key": policy.policy_key,
+            "content_sha256": policy.content_sha256,
+            "lifecycle_state": policy.lifecycle_state,
+            "effective_from": policy.effective_from.isoformat() if policy and policy.effective_from else None,
+            "effective_to": policy.effective_to.isoformat() if policy and policy.effective_to else None,
+            "applicability": policy.applicability,
+        }
+        if policy
+        else None,
+        "evidence": [
+            {
+                "assertion_id": str(assertion.id),
+                "evidence_record_id": str(assertion.evidence_record_id),
+                "source_record_version_id": str(assertion.source_record_version_id),
+                "proposition_key": assertion.proposition_key,
+                "subject_key": assertion.subject_key,
+                "polarity": assertion.polarity,
+                "fact_path": assertion.fact_path,
+                "asserted_value": assertion.asserted_value,
+                "scope": assertion.scope,
+                "decisive": assertion.decisive,
+            }
+            for assertion in found.assertions
+        ],
+        "reconciliation": {
+            domain: {
+                "id": str(reconciliation_id),
+                "state": state,
+                "cutoff": cutoff.isoformat() if cutoff else None,
+                "source_set_sha256": source_set_sha256,
+            }
+            for domain, (reconciliation_id, state, cutoff, source_set_sha256) in reconciliation.items()
+        },
+        "ledger": {
+            "justified_entitlement_minor": residual.justified_entitlement_minor,
+            "allocated_settlement_minor": residual.allocated_settlement_minor,
+            "active_pursuit_minor": residual.active_pursuit_minor,
+            "remaining_minor": residual.remaining_minor,
+            "currency": residual.currency,
+        },
         "retrieval_complete": found.complete,
     }
     session.execute(
@@ -359,6 +473,10 @@ def reserve_synthetic_packet(
     if assessment is None:
         raise ValueError("Assessment is not current synthetic claim-ready")
     if assessment.conclusion != "SYNTHETIC_CLAIM_READY" or assessment.tenant_revision != revision:
+        raise ValueError("Assessment is not current synthetic claim-ready")
+    if not _snapshot_policy_is_actionable(
+        session, org_id, assessment.dependency_snapshot, datetime.now(UTC)
+    ):
         raise ValueError("Assessment is not current synthetic claim-ready")
     current_assessment_id = session.execute(
         text("SELECT public.lock_current_recovery_assessment(:obligation_id)"),

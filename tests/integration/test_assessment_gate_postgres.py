@@ -37,7 +37,14 @@ from recovery_manager.models import (
 _RECONCILIATION_DEFAULT = object()
 
 
-def _register_synthetic_profile(settings, org_id: str, fixture_sha256: str, permitted_minor: int = 800) -> None:
+def _register_synthetic_profile(
+    settings,
+    org_id: str,
+    fixture_sha256: str,
+    permitted_minor: int = 800,
+    *,
+    effective_to: datetime | None = None,
+) -> None:
     owner_factory = sessionmaker(
         bind=create_engine(settings.migration_database_url, future=True), future=True
     )
@@ -50,7 +57,7 @@ def _register_synthetic_profile(settings, org_id: str, fixture_sha256: str, perm
             authority_class="SYNTHETIC",
             content_sha256="b" * 64,
             effective_from=None,
-            effective_to=None,
+            effective_to=effective_to,
             applicability={
                 **provenance,
                 "proposition_key": "synthetic-invalid-fee",
@@ -96,6 +103,7 @@ def _assess_synthetic_candidate(
     event_direction: str = "DEBIT",
     permitted_minor: int = 800,
     derivation_currency: str = "USD",
+    policy_effective_to: datetime | None = None,
 ):
     """Build a complete mechanics candidate, varying one proof premise at a time."""
     set_local_tenant(session, org_id)
@@ -118,7 +126,13 @@ def _assess_synthetic_candidate(
     ).hexdigest()
     provenance = {"fixture_profile": "synthetic-mechanics-v1", "fixture_sha256": fixture_sha256}
     if register_profile:
-        _register_synthetic_profile(settings, org_id, fixture_sha256, permitted_minor)
+        _register_synthetic_profile(
+            settings,
+            org_id,
+            fixture_sha256,
+            permitted_minor,
+            effective_to=policy_effective_to,
+        )
     source = SourceRecordVersion(
         org_id=org_id,
         source_kind="synthetic",
