@@ -304,6 +304,12 @@ class EconomicObligation(Base):
             unique=True,
             postgresql_where=text("financial_event_id IS NOT NULL"),
         ),
+        Index(
+            "ix_obligation_opportunity_event",
+            "org_id",
+            "financial_event_id",
+            postgresql_where=text("financial_event_id IS NOT NULL"),
+        ),
         UniqueConstraint("org_id", "id", name="uq_obligation_org_id"),
         CheckConstraint("btrim(org_id) <> ''", name="ck_obligation_org_nonempty"),
         CheckConstraint(

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from recovery_manager.config import Settings
 
-EXPECTED_MIGRATION_HEAD = "0020_current_pointer_integrity"
+EXPECTED_MIGRATION_HEAD = "0021_opportunity_conservation"
 
 
 def make_engine(settings: Settings, *, worker: bool = False) -> Engine:
