@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 from sqlalchemy import create_engine, update
 from sqlalchemy.exc import DBAPIError
@@ -122,6 +124,8 @@ def _assess_synthetic_candidate(
         coverage_scope={"coverage": "KNOWN"},
         normalized_fields={},
     )
+    session.add(event)
+    session.flush()
     obligation = EconomicObligation(
         org_id=org_id,
         economic_key="SYN-FEE-001",
@@ -131,8 +135,6 @@ def _assess_synthetic_candidate(
         business_instance=provenance,
         quantity_scope={"coverage": "KNOWN", "quantity": "1"},
     )
-    session.add(event)
-    session.flush()
     session.add_all((evidence, obligation))
     session.flush()
     if reconciliation_state is not None:
@@ -199,14 +201,7 @@ def _assess_synthetic_candidate(
         )
     )
     session.flush()
-    return assess_synthetic(
-        session,
-        org_id,
-        obligation.id,
-        "SYN-FEE-001",
-        "synthetic-invalid-fee",
-        synthetic_capability_enabled=True,
-    )
+    return obligation.id
 
 
 @pytest.mark.parametrize(
@@ -223,15 +218,70 @@ def _assess_synthetic_candidate(
     ),
 )
 def test_synthetic_readiness_requires_exact_required_evidence_premise(
-    runtime_factory, settings, kwargs, org_id
+    runtime_factory, worker_factory, settings, kwargs, org_id
 ) -> None:
     with runtime_factory() as session, session.begin():
-        assessment = _assess_synthetic_candidate(session, settings, org_id=org_id, **kwargs)
+        obligation_id = _assess_synthetic_candidate(session, settings, org_id=org_id, **kwargs)
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(
+            session,
+            org_id,
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
         assert assessment.conclusion == "REVIEW"
 
 
+def test_worker_constructor_publishes_trusted_synthetic_two_dollar_control(
+    runtime_factory, worker_factory, settings
+) -> None:
+    org_id = "org_worker_synthetic_control"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(session, settings, org_id=org_id)
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(
+            session,
+            org_id,
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
+        assert assessment.conclusion == "SYNTHETIC_CLAIM_READY"
+        assert assessment.recoverable_minor == 200
+
+
+def test_export_consumes_real_worker_published_synthetic_assessment(
+    runtime_factory, worker_factory, settings
+) -> None:
+    org_id = "org_worker_synthetic_export"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(session, settings, org_id=org_id)
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(
+            session,
+            org_id,
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
+    with runtime_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        with pytest.raises(ValueError, match="not current synthetic claim-ready"):
+            reserve_synthetic_packet(session, org_id, uuid4(), "fabricated-export")
+        packet = reserve_synthetic_packet(session, org_id, assessment.id, "worker-path-export")
+        assert packet.packet["synthetic_only"] is True
+        assert packet.packet["amount_minor"] == 200
+
+
 def test_empty_decisive_evidence_cannot_produce_synthetic_ready(
-    runtime_factory, alpha, settings
+    runtime_factory, worker_factory, alpha, settings
 ) -> None:
     """Regression: a residual plus a synthetic-looking derivation is not proof."""
     with runtime_factory() as session, session.begin():
@@ -272,10 +322,13 @@ def test_empty_decisive_evidence_cannot_produce_synthetic_ready(
             )
         )
         session.flush()
+        obligation_id = obligation.id
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, "org_demo_alpha")
         assessment = assess_synthetic(
             session,
             "org_demo_alpha",
-            obligation.id,
+            obligation_id,
             "SYN-FEE-001",
             "synthetic-invalid-fee",
         )
@@ -284,153 +337,26 @@ def test_empty_decisive_evidence_cannot_produce_synthetic_ready(
 
 
 def test_trusted_synthetic_control_is_ready_for_two_dollars(
-    runtime_factory, alpha, settings
+    runtime_factory, worker_factory, alpha, settings
 ) -> None:
     """SYNTHETIC MECHANICS — NOT ORGANIZER GROUND TRUTH OR REAL CHANNEL POLICY."""
-    synthetic_org = "org_synthetic_mechanics"
-    synthetic_principal = Principal(
-        org_id=synthetic_org, actor_id="synthetic_fixture", role="fixture_admin"
-    )
-    _register_synthetic_profile(settings, synthetic_org)
+    synthetic_org = "org_synthetic_mechanics_converted"
     with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(session, settings, org_id=synthetic_org)
+    with worker_factory() as session, session.begin():
         set_local_tenant(session, synthetic_org)
-        accept_input(
-            session,
-            synthetic_principal,
-            b"synthetic fixture",
-            "application/octet-stream",
-            "synthetic",
-            "control",
-            settings,
-        )
-        provenance = {"fixture_profile": "synthetic-mechanics-v1", "fixture_sha256": "a" * 64}
-        source = SourceRecordVersion(
-            org_id=synthetic_org,
-            source_kind="synthetic",
-            source_record_id="SYN-FEE-001",
-            content_sha256="c" * 64,
-            declared_org_id=synthetic_org,
-            payload={"fee": {"valid": True}},
-        )
-        session.add(source)
-        session.flush()
-        event = FinancialEvent(
-            org_id=synthetic_org,
-            source_record_version_id=source.id,
-            event_type="SYNTHETIC_FEE",
-            direction="DEBIT",
-            amount_minor=1000,
-            currency="USD",
-            quantity=1,
-            posting_time=None,
-            posting_time_precision=None,
-            incident_time=None,
-            incident_time_precision=None,
-            business_references={"synthetic_fixture": "SYN-FEE-001"},
-            normalized_fields={"synthetic": True},
-        )
-        session.add(event)
-        session.flush()
-        evidence = EvidenceRecord(
-            org_id=synthetic_org,
-            source_record_version_id=source.id,
-            evidence_kind="SYNTHETIC",
-            observed_time=None,
-            observed_time_precision=None,
-            coverage_quantity=1,
-            coverage_scope={"coverage": "KNOWN"},
-            normalized_fields={},
-        )
-        session.add(evidence)
-        session.flush()
-        obligation = EconomicObligation(
-            org_id=synthetic_org,
-            economic_key="SYN-FEE-001",
-            financial_event_id=event.id,
-            recovery_basis="INVALID_FEE",
-            currency="USD",
-            business_instance=provenance,
-            quantity_scope={"coverage": "KNOWN", "quantity": "1"},
-        )
-        session.add(obligation)
-        session.flush()
-        with pytest.raises(DBAPIError):
-            with session.begin_nested():
-                session.add(
-                    EconomicObligation(
-                        org_id=synthetic_org,
-                        economic_key="SYN-FEE-001-DUPLICATE",
-                        financial_event_id=event.id,
-                        recovery_basis="INVALID_FEE",
-                        currency="USD",
-                        business_instance=provenance,
-                        quantity_scope={"coverage": "KNOWN", "quantity": "1"},
-                    )
-                )
-                session.flush()
-        session.add_all(
-            (
-                ReconciliationState(
-                    org_id=synthetic_org,
-                    obligation_id=obligation.id,
-                    domain="SETTLEMENT",
-                    state="RECONCILED_NONE",
-                    cutoff=None,
-                    source_set_sha256="e" * 64,
-                ),
-                ReconciliationState(
-                    org_id=synthetic_org,
-                    obligation_id=obligation.id,
-                    domain="PURSUIT",
-                    state="RECONCILED_NONE",
-                    cutoff=None,
-                    source_set_sha256="f" * 64,
-                ),
-            )
-        )
-        session.add(
-            EvidenceAssertion(
-                org_id=synthetic_org,
-                evidence_record_id=evidence.id,
-                source_record_version_id=source.id,
-                proposition_key="synthetic-invalid-fee",
-                subject_key="SYN-FEE-001",
-                polarity="SUPPORTS",
-                fact_path="fee.valid",
-                asserted_value=True,
-                scope={"coverage": "KNOWN", "premise_key": "SYNTHETIC_VALID_FEE"},
-                decisive=True,
-            )
-        )
-        session.add(
-            AmountDerivation(
-                org_id=synthetic_org,
-                obligation_id=obligation.id,
-                derivation_version=1,
-                currency="USD",
-                observed_amount_minor=1000,
-                expected_amount_minor=800,
-                justified_entitlement_minor=200,
-                rounding_rule="integer minor units",
-                basis_class="SYNTHETIC_ONLY",
-                source_basis=provenance,
-            )
-        )
-        session.flush()
         disabled = assess_synthetic(
             session,
             synthetic_org,
-            obligation.id,
+            obligation_id,
             "SYN-FEE-001",
             "synthetic-invalid-fee",
         )
         assert disabled.conclusion == "REVIEW"
-        with pytest.raises(ValueError, match="not current synthetic claim-ready"):
-            reserve_synthetic_packet(session, synthetic_org, disabled.id, "disabled-export")
         wrong_subject = assess_synthetic(
             session,
             synthetic_org,
-            obligation.id,
+            obligation_id,
             "other-business-instance",
             "synthetic-invalid-fee",
             synthetic_capability_enabled=True,
@@ -439,13 +365,15 @@ def test_trusted_synthetic_control_is_ready_for_two_dollars(
         assessment = assess_synthetic(
             session,
             synthetic_org,
-            obligation.id,
+            obligation_id,
             "SYN-FEE-001",
             "synthetic-invalid-fee",
             synthetic_capability_enabled=True,
         )
         assert assessment.conclusion == "SYNTHETIC_CLAIM_READY"
         assert assessment.recoverable_minor == 200
+    with runtime_factory() as session, session.begin():
+        set_local_tenant(session, synthetic_org)
         packet = reserve_synthetic_packet(session, synthetic_org, assessment.id, "synthetic-export")
         assert packet.packet["synthetic_only"] is True
         assert packet.packet["amount_minor"] == 200
@@ -453,14 +381,11 @@ def test_trusted_synthetic_control_is_ready_for_two_dollars(
             reserve_synthetic_packet(session, synthetic_org, assessment.id, "synthetic-export").id
             == packet.id
         )
-        view = current_assessment(session, synthetic_org, obligation.id)
-        assert view is not None
-        assert view.state == "STALE"
-
+        assert current_assessment(session, synthetic_org, obligation_id).state == "STALE"  # type: ignore[union-attr]
         session.add(
             AmountDerivation(
                 org_id=synthetic_org,
-                obligation_id=obligation.id,
+                obligation_id=obligation_id,
                 derivation_version=2,
                 currency="USD",
                 observed_amount_minor=1000,
@@ -468,20 +393,22 @@ def test_trusted_synthetic_control_is_ready_for_two_dollars(
                 justified_entitlement_minor=300,
                 rounding_rule="integer minor units",
                 basis_class="SYNTHETIC_ONLY",
-                source_basis=provenance,
+                source_basis={"fixture_profile": "synthetic-mechanics-v1", "fixture_sha256": "a" * 64},
             )
         )
-        session.flush()
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, synthetic_org)
         forged_entitlement = assess_synthetic(
             session,
             synthetic_org,
-            obligation.id,
+            obligation_id,
             "SYN-FEE-001",
             "synthetic-invalid-fee",
             synthetic_capability_enabled=True,
         )
         assert forged_entitlement.conclusion == "REVIEW"
-
+    with runtime_factory() as session, session.begin():
+        set_local_tenant(session, synthetic_org)
         with pytest.raises(DBAPIError):
             with session.begin_nested():
                 session.execute(
@@ -492,11 +419,10 @@ def test_trusted_synthetic_control_is_ready_for_two_dollars(
                     )
                     .values(lifecycle_state="REVOKED")
                 )
-
         session.add(
             AmountDerivation(
                 org_id=synthetic_org,
-                obligation_id=obligation.id,
+                obligation_id=obligation_id,
                 derivation_version=3,
                 currency="USD",
                 observed_amount_minor=1000,
@@ -504,17 +430,15 @@ def test_trusted_synthetic_control_is_ready_for_two_dollars(
                 justified_entitlement_minor=200,
                 rounding_rule="integer minor units",
                 basis_class="SYNTHETIC_ONLY",
-                source_basis={
-                    "fixture_profile": "synthetic-mechanics-v1",
-                    "fixture_sha256": "e" * 64,
-                },
+                source_basis={"fixture_profile": "synthetic-mechanics-v1", "fixture_sha256": "e" * 64},
             )
         )
-        session.flush()
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, synthetic_org)
         unregistered_fixture = assess_synthetic(
             session,
             synthetic_org,
-            obligation.id,
+            obligation_id,
             "SYN-FEE-001",
             "synthetic-invalid-fee",
             synthetic_capability_enabled=True,

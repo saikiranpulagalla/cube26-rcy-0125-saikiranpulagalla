@@ -313,7 +313,9 @@ def reserve_synthetic_packet(
         select(RecoveryAssessment).where(
             RecoveryAssessment.org_id == org_id, RecoveryAssessment.id == assessment_id
         )
-    ).scalar_one()
+    ).scalar_one_or_none()
+    if assessment is None:
+        raise ValueError("Assessment is not current synthetic claim-ready")
     if assessment.conclusion != "SYNTHETIC_CLAIM_READY" or assessment.tenant_revision != revision:
         raise ValueError("Assessment is not current synthetic claim-ready")
     current_assessment_id = session.execute(

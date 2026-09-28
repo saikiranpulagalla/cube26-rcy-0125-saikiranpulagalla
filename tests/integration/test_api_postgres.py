@@ -1,19 +1,12 @@
 from __future__ import annotations
 
-import json
-from uuid import uuid4
-
 from fastapi.testclient import TestClient
-from sqlalchemy import select, text
+from test_assessment_gate_postgres import _assess_synthetic_candidate
 
 from recovery_manager.api import create_app
+from recovery_manager.assessment import assess_synthetic
 from recovery_manager.db import set_local_tenant
-from recovery_manager.ingestion import accept_input
-from recovery_manager.models import (
-    ClaimPursuit,
-    EconomicObligation,
-    TenantState,
-)
+from recovery_manager.models import ClaimPursuit
 
 
 def test_api_auth_authorization_raw_roundtrip_and_spoofing(
@@ -48,45 +41,22 @@ def test_api_auth_authorization_raw_roundtrip_and_spoofing(
         assert conflict.status_code == 409
 
 
-def test_review_page_is_tenant_scoped_and_marks_stale(runtime_factory, settings) -> None:
+def test_review_page_is_tenant_scoped_and_marks_stale(runtime_factory, worker_factory, settings) -> None:
     with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(
+            session, settings, org_id="org_demo_alpha"
+        )
+    with worker_factory() as session, session.begin():
         set_local_tenant(session, "org_demo_alpha")
-        accept_input(
+        assessment = assess_synthetic(
             session,
-            settings.principals()["alpha-local-token"],
-            b"review-fixture",
-            "application/octet-stream",
-            "review",
-            "review-fixture",
-            settings,
+            "org_demo_alpha",
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
         )
-        obligation = EconomicObligation(
-            org_id="org_demo_alpha",
-            economic_key="review-alpha",
-            recovery_basis="INVALID_FEE",
-            currency="USD",
-            business_instance={},
-            quantity_scope={"coverage": "KNOWN"},
-        )
-        session.add(obligation)
-        session.flush()
-        revision = session.execute(
-            select(TenantState.decision_revision).where(TenantState.org_id == "org_demo_alpha")
-        ).scalar_one()
-        assessment_id = uuid4()
-        session.execute(
-            text(
-                "SELECT public.publish_recovery_assessment("
-                ":assessment_id, :obligation_id, :revision, 'SYNTHETIC_CLAIM_READY', 200, 'USD', "
-                "CAST(:snapshot AS jsonb))"
-            ),
-            {
-                "assessment_id": assessment_id,
-                "obligation_id": obligation.id,
-                "revision": revision,
-                "snapshot": json.dumps({"tenant_revision": revision}),
-            },
-        )
+        assessment_id = assessment.id
     app = create_app(settings=settings, factory=runtime_factory)
     headers = {"X-Development-Credential": "alpha-local-token"}
     with TestClient(app) as client:

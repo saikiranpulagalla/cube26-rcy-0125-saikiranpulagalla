@@ -1,67 +1,55 @@
 from __future__ import annotations
 
-import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 
-from recovery_manager.assessment import current_assessment, reserve_synthetic_packet
-from recovery_manager.config import Principal
+from recovery_manager.assessment import (
+    assess_synthetic,
+    current_assessment,
+    reserve_synthetic_packet,
+)
 from recovery_manager.db import set_local_tenant
-from recovery_manager.ingestion import accept_input
 from recovery_manager.models import (
     ClaimPursuit,
-    EconomicObligation,
     PursuitAllocation,
     SyntheticPacketReservation,
     TenantState,
 )
 
 
-def _ready_assessment(runtime_factory, settings, org_id: str, key: str) -> tuple[UUID, UUID]:
-    principal = Principal(org_id=org_id, actor_id="synthetic_fixture", role="fixture_admin")
+def _ready_assessment(runtime_factory, worker_factory, settings, org_id: str, key: str) -> tuple[UUID, UUID]:
+    """Construct and publish through the real worker-only guarded path."""
+    from test_assessment_gate_postgres import _assess_synthetic_candidate
+
     with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(
+            session, settings, org_id=org_id
+        )
+    with worker_factory() as session, session.begin():
         set_local_tenant(session, org_id)
-        accept_input(
-            session, principal, key.encode(), "application/octet-stream", "synthetic", key, settings
+        assessment = assess_synthetic(
+            session,
+            org_id,
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
         )
-        obligation = EconomicObligation(
-            org_id=org_id,
-            economic_key=key,
-            recovery_basis="INVALID_FEE",
-            currency="USD",
-            business_instance={"fixture": "SYNTHETIC MECHANICS"},
-            quantity_scope={"coverage": "KNOWN", "quantity": "1"},
-        )
-        session.add(obligation)
-        session.flush()
-        revision = session.execute(
-            select(TenantState.decision_revision).where(TenantState.org_id == org_id)
-        ).scalar_one()
-        assessment_id = uuid4()
-        session.execute(
-            text(
-                "SELECT public.publish_recovery_assessment("
-                ":assessment_id, :obligation_id, :revision, 'SYNTHETIC_CLAIM_READY', 200, 'USD', "
-                "CAST(:snapshot AS jsonb))"
-            ),
-            {
-                "assessment_id": assessment_id,
-                "obligation_id": obligation.id,
-                "revision": revision,
-                "snapshot": json.dumps({"tenant_revision": revision}),
-            },
-        )
-        return assessment_id, obligation.id
+        assert assessment.conclusion == "SYNTHETIC_CLAIM_READY"
+        assert assessment.recoverable_minor == 200
+        return assessment.id, obligation_id
 
 
-def test_concurrent_exports_reserve_one_economic_value(runtime_factory, settings) -> None:
+def test_concurrent_exports_reserve_one_economic_value(runtime_factory, worker_factory, settings) -> None:
     org_id = "org_synthetic_export_race"
-    assessment_id, obligation_id = _ready_assessment(runtime_factory, settings, org_id, "export-race")
+    assessment_id, obligation_id = _ready_assessment(
+        runtime_factory, worker_factory, settings, org_id, "export-race"
+    )
     barrier = Barrier(2)
 
     def export(key: str) -> str:
@@ -84,9 +72,11 @@ def test_concurrent_exports_reserve_one_economic_value(runtime_factory, settings
         assert current_assessment(session, org_id, obligation_id).state == "STALE"  # type: ignore[union-attr]
 
 
-def test_same_key_concurrent_export_is_one_packet(runtime_factory, settings) -> None:
+def test_same_key_concurrent_export_is_one_packet(runtime_factory, worker_factory, settings) -> None:
     org_id = "org_synthetic_export_idempotency"
-    assessment_id, _ = _ready_assessment(runtime_factory, settings, org_id, "export-idempotency")
+    assessment_id, _ = _ready_assessment(
+        runtime_factory, worker_factory, settings, org_id, "export-idempotency"
+    )
     barrier = Barrier(2)
 
     def export() -> str:
@@ -105,9 +95,13 @@ def test_same_key_concurrent_export_is_one_packet(runtime_factory, settings) -> 
         assert session.execute(select(func.count()).select_from(ClaimPursuit)).scalar_one() == 1
 
 
-def test_export_rejects_stale_assessment_after_decisive_revision(runtime_factory, settings) -> None:
+def test_export_rejects_stale_assessment_after_decisive_revision(
+    runtime_factory, worker_factory, settings
+) -> None:
     org_id = "org_synthetic_export_stale"
-    assessment_id, obligation_id = _ready_assessment(runtime_factory, settings, org_id, "export-stale")
+    assessment_id, obligation_id = _ready_assessment(
+        runtime_factory, worker_factory, settings, org_id, "export-stale"
+    )
     with runtime_factory() as session, session.begin():
         set_local_tenant(session, org_id)
         assert current_assessment(session, org_id, obligation_id).state == "CURRENT"  # type: ignore[union-attr]
@@ -129,9 +123,13 @@ def test_export_rejects_stale_assessment_after_decisive_revision(runtime_factory
             reserve_synthetic_packet(session, org_id, assessment_id, "stale")
 
 
-def test_restricted_runtime_cannot_mutate_immutable_assessments_or_packets(runtime_factory, settings) -> None:
+def test_restricted_runtime_cannot_mutate_immutable_assessments_or_packets(
+    runtime_factory, worker_factory, settings
+) -> None:
     org_id = "org_synthetic_immutable"
-    assessment_id, _ = _ready_assessment(runtime_factory, settings, org_id, "immutable")
+    assessment_id, _ = _ready_assessment(
+        runtime_factory, worker_factory, settings, org_id, "immutable"
+    )
     with runtime_factory() as session, session.begin():
         set_local_tenant(session, org_id)
         packet = reserve_synthetic_packet(session, org_id, assessment_id, "immutable-export")
@@ -147,9 +145,11 @@ def test_restricted_runtime_cannot_mutate_immutable_assessments_or_packets(runti
             session.execute(statement, {"id": packet_id if "packet" in str(statement) else assessment_id})
 
 
-def test_export_transaction_rolls_back_packet_pursuit_and_allocation(runtime_factory, settings) -> None:
+def test_export_transaction_rolls_back_packet_pursuit_and_allocation(
+    runtime_factory, worker_factory, settings
+) -> None:
     org_id = "org_synthetic_export_rollback"
-    assessment_id, _ = _ready_assessment(runtime_factory, settings, org_id, "rollback")
+    assessment_id, _ = _ready_assessment(runtime_factory, worker_factory, settings, org_id, "rollback")
     with pytest.raises(RuntimeError, match="inject"):
         with runtime_factory() as session, session.begin():
             set_local_tenant(session, org_id)
@@ -162,9 +162,11 @@ def test_export_transaction_rolls_back_packet_pursuit_and_allocation(runtime_fac
         assert session.execute(select(func.count()).select_from(PursuitAllocation)).scalar_one() == 0
 
 
-def test_decision_revision_advances_on_commit_but_not_rollback(runtime_factory, settings) -> None:
+def test_decision_revision_advances_on_commit_but_not_rollback(
+    runtime_factory, worker_factory, settings
+) -> None:
     org_id = "org_synthetic_revision"
-    _, _ = _ready_assessment(runtime_factory, settings, org_id, "revision")
+    _ready_assessment(runtime_factory, worker_factory, settings, org_id, "revision")
     with runtime_factory() as session, session.begin():
         set_local_tenant(session, org_id)
         before = session.execute(
