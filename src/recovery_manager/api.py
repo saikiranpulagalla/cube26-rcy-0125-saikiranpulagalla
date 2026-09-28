@@ -24,11 +24,12 @@ from recovery_manager.db import (
 )
 from recovery_manager.ingestion import IdempotencyConflict, accept_input
 from recovery_manager.models import (
-    AmountDerivation,
     ClaimPursuit,
     EconomicObligation,
+    PursuitAllocation,
     RawEnvelope,
     RecoveryAssessment,
+    SettlementAllocation,
     SyntheticPacketReservation,
     TenantState,
     WorkIntent,
@@ -210,15 +211,6 @@ def create_app(
                     EconomicObligation.id == assessment.obligation_id,
                 )
             ).scalar_one()
-            derivation = session.execute(
-                select(AmountDerivation)
-                .where(
-                    AmountDerivation.org_id == principal.org_id,
-                    AmountDerivation.obligation_id == obligation.id,
-                )
-                .order_by(AmountDerivation.derivation_version.desc())
-                .limit(1)
-            ).scalar_one_or_none()
             current = current_assessment(session, principal.org_id, obligation.id)
             state = current.state if current is not None and current.assessment.id == assessment.id else "HISTORICAL"
             packet = session.execute(
@@ -228,27 +220,57 @@ def create_app(
                 )
             ).scalar_one_or_none()
             pursuits = session.execute(
-                select(ClaimPursuit.status).where(ClaimPursuit.org_id == principal.org_id)
+                select(ClaimPursuit.status)
+                .join(PursuitAllocation, PursuitAllocation.pursuit_id == ClaimPursuit.id)
+                .where(
+                    ClaimPursuit.org_id == principal.org_id,
+                    PursuitAllocation.org_id == principal.org_id,
+                    PursuitAllocation.obligation_id == obligation.id,
+                )
+            ).scalars().all()
+            settlements = session.execute(
+                select(SettlementAllocation.allocated_minor).where(
+                    SettlementAllocation.org_id == principal.org_id,
+                    SettlementAllocation.obligation_id == obligation.id,
+                )
             ).scalars().all()
         amount = (
             "—"
             if assessment.recoverable_minor is None
             else f"{assessment.currency} {assessment.recoverable_minor // 100}.{assessment.recoverable_minor % 100:02d}"
         )
-        derivation_text = "unavailable" if derivation is None else (
-            f"observed={derivation.observed_amount_minor}; expected={derivation.expected_amount_minor}; "
-            f"entitlement={derivation.justified_entitlement_minor}; rule={derivation.rounding_rule}"
+        snapshot = assessment.dependency_snapshot
+        derivation = snapshot.get("amount_derivation")
+        policy = snapshot.get("policy")
+        evidence = snapshot.get("evidence")
+        reconciliation = snapshot.get("reconciliation")
+        authority = snapshot.get("trusted_fixture_profile")
+        derivation_text = "historical dependency unavailable" if not derivation else str(derivation)
+        policy_text = "historical dependency unavailable" if not policy else str(policy)
+        evidence_text = "historical dependency unavailable" if not evidence else str(evidence)
+        reconciliation_text = "historical dependency unavailable" if not reconciliation else str(reconciliation)
+        capability = (
+            "Synthetic mechanics only; not operational policy validation."
+            if authority
+            else "Historical authority unavailable."
+        )
+        current_text = state if state != "HISTORICAL" else (
+            f"HISTORICAL; current assessment is {current.assessment.id}" if current is not None else "HISTORICAL"
         )
         body = f"""<!doctype html><title>Recovery review</title><main>
-<h1>Recovery assessment</h1><p><strong>{escape(assessment.conclusion)}</strong> · {escape(state)} · {escape(amount)}</p>
-<dl><dt>Capability</dt><dd>SYNTHETIC_ONLY; operational policy and AI are DISABLED.</dd>
-<dt>Obligation</dt><dd>{escape(obligation.economic_key)} / {escape(obligation.recovery_basis)}</dd>
-<dt>Quantity scope</dt><dd>{escape(str(obligation.quantity_scope))}</dd>
-<dt>Amount derivation</dt><dd>{escape(derivation_text)}</dd>
-<dt>Snapshot</dt><dd>{escape(str(assessment.dependency_snapshot))}</dd>
-<dt>Pursuit states</dt><dd>{escape(', '.join(pursuits) or 'none')}</dd>
+<h1>Recovery assessment</h1><section><h2>Historical assessment proof</h2>
+<p><strong>{escape(assessment.conclusion)}</strong> · {escape(amount)} · assessed at {escape(str(snapshot.get('assessment_as_of', 'unavailable')))}</p>
+<dl><dt>Capability</dt><dd>{escape(capability)}</dd>
+<dt>Historical obligation</dt><dd>{escape(str(snapshot.get('obligation', 'historical dependency unavailable')))}</dd>
+<dt>Pinned amount derivation</dt><dd>{escape(derivation_text)}</dd>
+<dt>Pinned policy</dt><dd>{escape(policy_text)}</dd>
+<dt>Pinned evidence</dt><dd>{escape(evidence_text)}</dd>
+<dt>Pinned reconciliation</dt><dd>{escape(reconciliation_text)}</dd></dl></section>
+<section><h2>Current status</h2><dl><dt>Actionability</dt><dd>{escape(current_text)}</dd>
+<dt>Relevant pursuit states</dt><dd>{escape(', '.join(pursuits) or 'none')}</dd>
+<dt>Relevant settlements</dt><dd>{escape(', '.join(str(item) for item in settlements) or 'none')}</dd>
 <dt>Packet</dt><dd>{'exported historical packet' if packet else 'not exported'}</dd>
-</dl><p>Machine assessment is immutable. This view provides no force-claim action.</p></main>"""
+</dl></section><p>Machine assessment is immutable. This view provides no force-claim action.</p></main>"""
         return HTMLResponse(body)
 
     return app
