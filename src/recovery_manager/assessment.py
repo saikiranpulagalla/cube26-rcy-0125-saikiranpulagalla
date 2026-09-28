@@ -196,17 +196,38 @@ def assess_synthetic(
     )
     found = discover_assertions(session, org_id, subject_key, proposition_key, limit=100)
     residual = residual_for_obligation(session, org_id, obligation_id)
-    reconciliation: dict[str, str] = {}
-    for domain, state in session.execute(
-        select(ReconciliationState.domain, ReconciliationState.state).where(
+    reconciliation: dict[str, tuple[str, datetime | None]] = {}
+    for domain, state, cutoff in session.execute(
+        select(
+            ReconciliationState.domain,
+            ReconciliationState.state,
+            ReconciliationState.cutoff,
+        ).where(
             ReconciliationState.org_id == org_id,
             ReconciliationState.obligation_id == obligation_id,
         )
     ).tuples():
-        reconciliation[domain] = state
+        reconciliation[domain] = (state, cutoff)
+    def complete_reconciliation(domain: str) -> bool:
+        state_and_cutoff = reconciliation.get(domain)
+        if state_and_cutoff is None:
+            return False
+        state, cutoff = state_and_cutoff
+        return (
+            state in {"RECONCILED_NONE", "RECONCILED_COMPLETE"}
+            and cutoff is not None
+            and cutoff <= datetime.now(UTC)
+        )
+
     reconciliation_complete = all(
-        reconciliation.get(domain) in {"RECONCILED_NONE", "RECONCILED_COMPLETE"}
-        for domain in ("SETTLEMENT", "PURSUIT")
+        complete_reconciliation(domain) for domain in ("SETTLEMENT", "PURSUIT")
+    )
+    reconciliation_consistent = not (
+        reconciliation.get("SETTLEMENT", ("UNKNOWN", None))[0] == "RECONCILED_NONE"
+        and residual.allocated_settlement_minor != 0
+    ) and not (
+        reconciliation.get("PURSUIT", ("UNKNOWN", None))[0] == "RECONCILED_NONE"
+        and residual.active_pursuit_minor != 0
     )
     source_basis = derivation.source_basis if derivation is not None else {}
     fixture_profile = source_basis.get("fixture_profile")
@@ -255,6 +276,7 @@ def assess_synthetic(
         and obligation.recovery_basis == "INVALID_FEE"
         and residual.remaining_minor is not None
         and reconciliation_complete
+        and reconciliation_consistent
         and found.complete
         and not found.conflict_present
         and policy_applies

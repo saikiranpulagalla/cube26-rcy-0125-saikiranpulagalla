@@ -20,16 +20,21 @@ from recovery_manager.db import set_local_tenant
 from recovery_manager.ingestion import accept_input
 from recovery_manager.models import (
     AmountDerivation,
+    ClaimPursuit,
     EconomicObligation,
     EvidenceAssertion,
     EvidenceLifecycleEvent,
     EvidenceRecord,
     FinancialEvent,
     PolicySourceVersion,
+    PursuitAllocation,
     ReconciliationState,
+    SettlementAllocation,
     SourceRecordVersion,
     SyntheticFixtureProfile,
 )
+
+_RECONCILIATION_DEFAULT = object()
 
 
 def _register_synthetic_profile(settings, org_id: str, fixture_sha256: str, permitted_minor: int = 800) -> None:
@@ -81,6 +86,8 @@ def _assess_synthetic_candidate(
     mismatched_source_version: bool = False,
     polarity: str = "SUPPORTS",
     reconciliation_state: str | None = "RECONCILED_NONE",
+    settlement_reconciliation_state: str | None | object = _RECONCILIATION_DEFAULT,
+    pursuit_reconciliation_state: str | None | object = _RECONCILIATION_DEFAULT,
     fixture_payload: dict[str, object] | None = None,
     registered_fixture_payload: dict[str, object] | None = None,
     register_profile: bool = True,
@@ -160,27 +167,30 @@ def _assess_synthetic_candidate(
     )
     session.add_all((evidence, obligation))
     session.flush()
-    if reconciliation_state is not None:
-        session.add_all(
-            (
-                ReconciliationState(
-                    org_id=org_id,
-                    obligation_id=obligation.id,
-                    domain="SETTLEMENT",
-                    state=reconciliation_state,
-                    cutoff=None,
-                    source_set_sha256="e" * 64,
-                ),
-                ReconciliationState(
-                    org_id=org_id,
-                    obligation_id=obligation.id,
-                    domain="PURSUIT",
-                    state=reconciliation_state,
-                    cutoff=None,
-                    source_set_sha256="f" * 64,
-                ),
-            )
+    settlement_state = (
+        reconciliation_state
+        if settlement_reconciliation_state is _RECONCILIATION_DEFAULT
+        else settlement_reconciliation_state
+    )
+    pursuit_state = (
+        reconciliation_state
+        if pursuit_reconciliation_state is _RECONCILIATION_DEFAULT
+        else pursuit_reconciliation_state
+    )
+    states = (("SETTLEMENT", settlement_state, "e" * 64), ("PURSUIT", pursuit_state, "f" * 64))
+    session.add_all(
+        ReconciliationState(
+            org_id=org_id,
+            obligation_id=obligation.id,
+            domain=domain,
+            state=state,
+            cutoff=datetime.now(UTC),
+            source_set_sha256=source_set_sha256,
         )
+        for domain, state, source_set_sha256 in states
+        if state is not None
+    )
+    if settlement_state is not None or pursuit_state is not None:
         session.flush()
     assertion_source_id = source.id
     if mismatched_source_version:
@@ -257,6 +267,233 @@ def test_synthetic_readiness_requires_exact_required_evidence_premise(
             synthetic_capability_enabled=True,
         )
         assert assessment.conclusion == "REVIEW"
+
+
+@pytest.mark.parametrize(
+    ("settlement_state", "pursuit_state"),
+    (
+        (None, "RECONCILED_NONE"),
+        ("RECONCILED_NONE", None),
+        ("UNKNOWN", "RECONCILED_NONE"),
+        ("RECONCILED_NONE", "UNKNOWN"),
+    ),
+)
+def test_unknown_reconciliation_in_either_operand_cannot_be_treated_as_zero(
+    runtime_factory, worker_factory, settings, settlement_state: str | None, pursuit_state: str | None
+) -> None:
+    org_id = f"org_reconciliation_independent_{settlement_state}_{pursuit_state}"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(
+            session,
+            settings,
+            org_id=org_id,
+            settlement_reconciliation_state=settlement_state,
+            pursuit_reconciliation_state=pursuit_state,
+        )
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(
+            session,
+            org_id,
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
+    assert assessment.conclusion == "REVIEW"
+
+
+def _add_settlement(session, org_id: str, obligation_id, amount_minor: int) -> None:
+    source = SourceRecordVersion(
+        org_id=org_id,
+        source_kind="synthetic-settlement",
+        source_record_id=f"settlement-{obligation_id}",
+        content_sha256=hashlib.sha256(f"settlement-{obligation_id}".encode()).hexdigest(),
+        declared_org_id=org_id,
+        payload={"credit": {"amount_minor": amount_minor}},
+    )
+    session.add(source)
+    session.flush()
+    credit = FinancialEvent(
+        org_id=org_id,
+        source_record_version_id=source.id,
+        event_type="SYNTHETIC_CREDIT",
+        direction="CREDIT",
+        amount_minor=amount_minor,
+        currency="USD",
+        quantity=None,
+        posting_time=None,
+        posting_time_precision=None,
+        incident_time=None,
+        incident_time_precision=None,
+        business_references={},
+        normalized_fields={"synthetic": True},
+    )
+    session.add(credit)
+    session.flush()
+    session.add(
+        SettlementAllocation(
+            org_id=org_id,
+            credit_event_id=credit.id,
+            obligation_id=obligation_id,
+            allocated_minor=amount_minor,
+            rationale="repair-07 known settlement",
+        )
+    )
+
+
+def _add_active_pursuit(session, org_id: str, obligation_id, amount_minor: int) -> None:
+    pursuit = ClaimPursuit(
+        org_id=org_id,
+        external_reference=None,
+        status="RECOMMENDED",
+        currency="USD",
+        declared_minor=amount_minor,
+    )
+    session.add(pursuit)
+    session.flush()
+    session.add(
+        PursuitAllocation(
+            org_id=org_id,
+            pursuit_id=pursuit.id,
+            obligation_id=obligation_id,
+            allocated_minor=amount_minor,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("settlement_minor", "pursuit_minor", "expected", "recoverable_minor"),
+    (
+        (100, 0, "SYNTHETIC_CLAIM_READY", 100),
+        (0, 100, "SYNTHETIC_CLAIM_READY", 100),
+        (200, 0, "RESOLVED", None),
+        (0, 200, "ALREADY_PURSUED", None),
+    ),
+)
+def test_explicitly_reconciled_allocations_drive_residual_outcomes(
+    runtime_factory,
+    worker_factory,
+    settings,
+    settlement_minor: int,
+    pursuit_minor: int,
+    expected: str,
+    recoverable_minor: int | None,
+) -> None:
+    org_id = f"org_reconciliation_outcome_{settlement_minor}_{pursuit_minor}"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(
+            session,
+            settings,
+            org_id=org_id,
+            settlement_reconciliation_state="RECONCILED_COMPLETE",
+            pursuit_reconciliation_state="RECONCILED_COMPLETE",
+        )
+        if settlement_minor:
+            _add_settlement(session, org_id, obligation_id, settlement_minor)
+        if pursuit_minor:
+            _add_active_pursuit(session, org_id, obligation_id, pursuit_minor)
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(
+            session,
+            org_id,
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
+    assert assessment.conclusion == expected
+    assert assessment.recoverable_minor == recoverable_minor
+
+
+@pytest.mark.parametrize("domain", ("SETTLEMENT", "PURSUIT"))
+def test_reconciled_none_cannot_override_actual_economic_records(
+    runtime_factory, worker_factory, settings, domain: str
+) -> None:
+    org_id = f"org_reconciliation_none_conflict_{domain.lower()}"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(session, settings, org_id=org_id)
+        if domain == "SETTLEMENT":
+            _add_settlement(session, org_id, obligation_id, 100)
+        else:
+            _add_active_pursuit(session, org_id, obligation_id, 100)
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(
+            session,
+            org_id,
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
+    assert assessment.conclusion == "REVIEW"
+
+
+def test_reconciliation_state_change_stales_current_assessment(
+    runtime_factory, worker_factory, settings
+) -> None:
+    # This test mutates certainty deliberately; a per-run tenant avoids
+    # carrying that state into a later focused/full test invocation.
+    org_id = f"org_reconciliation_state_freshness_{uuid4().hex}"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(session, settings, org_id=org_id)
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(
+            session,
+            org_id,
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
+        assert assessment.conclusion == "SYNTHETIC_CLAIM_READY"
+    owner_factory = sessionmaker(bind=create_engine(settings.migration_database_url, future=True), future=True)
+    with owner_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        session.execute(
+            update(ReconciliationState)
+            .where(
+                ReconciliationState.org_id == org_id,
+                ReconciliationState.obligation_id == obligation_id,
+                ReconciliationState.domain == "SETTLEMENT",
+            )
+            .values(state="UNKNOWN")
+        )
+    with runtime_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assert current_assessment(session, org_id, obligation_id).state == "STALE"  # type: ignore[union-attr]
+
+
+def test_reconciliation_without_a_cutoff_is_not_completeness(runtime_factory, worker_factory, settings) -> None:
+    org_id = "org_reconciliation_missing_cutoff"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(session, settings, org_id=org_id)
+    owner_factory = sessionmaker(bind=create_engine(settings.migration_database_url, future=True), future=True)
+    with owner_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        session.execute(
+            update(ReconciliationState)
+            .where(
+                ReconciliationState.org_id == org_id,
+                ReconciliationState.obligation_id == obligation_id,
+                ReconciliationState.domain == "PURSUIT",
+            )
+            .values(cutoff=None)
+        )
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(
+            session,
+            org_id,
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
+    assert assessment.conclusion == "REVIEW"
 
 
 def test_same_value_in_another_field_cannot_satisfy_synthetic_fee_premise(
