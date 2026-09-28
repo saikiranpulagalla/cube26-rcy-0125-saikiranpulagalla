@@ -82,6 +82,12 @@ def _supports_required_synthetic_premises(
             assertion.polarity != "SUPPORTS"
             or assertion.scope.get("premise_key") != "SYNTHETIC_VALID_FEE"
             or assertion.subject_key != obligation.economic_key
+            # The supported synthetic rule has one explicit premise: the
+            # source-backed ``fee.valid`` flag must be affirmatively true.
+            # A caller-labelled premise or an equally true neighbouring field
+            # is not interchangeable proof.
+            or assertion.fact_path != "fee.valid"
+            or assertion.asserted_value is not True
         ):
             continue
         evidence = session.execute(

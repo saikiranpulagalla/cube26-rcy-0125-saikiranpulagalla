@@ -22,6 +22,7 @@ from recovery_manager.models import (
     AmountDerivation,
     EconomicObligation,
     EvidenceAssertion,
+    EvidenceLifecycleEvent,
     EvidenceRecord,
     FinancialEvent,
     PolicySourceVersion,
@@ -72,8 +73,10 @@ def _assess_synthetic_candidate(
     org_id: str,
     premise_key: str = "SYNTHETIC_VALID_FEE",
     evidence_quantity: int = 1,
+    required_quantity: str = "1",
     source_value: bool = True,
     asserted_value: bool = True,
+    fact_path: str = "fee.valid",
     subject_key: str = "SYN-FEE-001",
     mismatched_source_version: bool = False,
     polarity: str = "SUPPORTS",
@@ -153,7 +156,7 @@ def _assess_synthetic_candidate(
         recovery_basis="INVALID_FEE",
         currency="USD",
         business_instance=provenance,
-        quantity_scope={"coverage": "KNOWN", "quantity": "1"},
+        quantity_scope={"coverage": "KNOWN", "quantity": required_quantity},
     )
     session.add_all((evidence, obligation))
     session.flush()
@@ -201,7 +204,7 @@ def _assess_synthetic_candidate(
                 proposition_key="synthetic-invalid-fee",
                 subject_key=subject_key,
                 polarity=polarity,
-                fact_path="fee.valid",
+                fact_path=fact_path,
                 asserted_value=asserted_value,
                 scope={"coverage": "KNOWN", "premise_key": premise_key},
                 decisive=True,
@@ -230,6 +233,7 @@ def _assess_synthetic_candidate(
         ({"premise_key": "IRRELEVANT"}, "org_proof_irrelevant"),
         ({"evidence_quantity": 0}, "org_proof_insufficient"),
         ({"source_value": False, "asserted_value": True}, "org_proof_false_value"),
+        ({"source_value": False, "asserted_value": False}, "org_proof_false_support"),
         ({"mismatched_source_version": True}, "org_proof_wrong_source"),
         ({"subject_key": "other-business-instance"}, "org_proof_wrong_subject"),
         ({"polarity": "CONTRADICTS"}, "org_proof_contradictory"),
@@ -253,6 +257,167 @@ def test_synthetic_readiness_requires_exact_required_evidence_premise(
             synthetic_capability_enabled=True,
         )
         assert assessment.conclusion == "REVIEW"
+
+
+def test_same_value_in_another_field_cannot_satisfy_synthetic_fee_premise(
+    runtime_factory, worker_factory, settings
+) -> None:
+    """A true value is not proof unless it comes from the required premise field."""
+    org_id = "org_proof_wrong_semantic_field"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(
+            session,
+            settings,
+            org_id=org_id,
+            fixture_payload={"fee": {"valid": True, "other": True}},
+            fact_path="fee.other",
+        )
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(
+            session,
+            org_id,
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
+    assert assessment.conclusion == "REVIEW"
+
+
+def test_supporting_and_contradicting_evidence_for_the_same_premise_conflict(
+    runtime_factory, worker_factory, settings
+) -> None:
+    org_id = "org_proof_supports_and_contradicts"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(session, settings, org_id=org_id)
+        evidence = session.execute(
+            select(EvidenceRecord).where(EvidenceRecord.org_id == org_id)
+        ).scalar_one()
+        session.add(
+            EvidenceAssertion(
+                org_id=org_id,
+                evidence_record_id=evidence.id,
+                source_record_version_id=evidence.source_record_version_id,
+                proposition_key="synthetic-invalid-fee",
+                subject_key="SYN-FEE-001",
+                polarity="CONTRADICTS",
+                fact_path="fee.valid",
+                asserted_value=True,
+                scope={"coverage": "KNOWN", "premise_key": "SYNTHETIC_VALID_FEE"},
+                decisive=True,
+            )
+        )
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(
+            session,
+            org_id,
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
+    assert assessment.conclusion == "REVIEW"
+
+
+def test_revoked_required_evidence_cannot_support_synthetic_readiness(
+    runtime_factory, worker_factory, settings
+) -> None:
+    org_id = "org_proof_revoked"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(session, settings, org_id=org_id)
+        assertion = session.execute(
+            select(EvidenceAssertion).where(EvidenceAssertion.org_id == org_id)
+        ).scalar_one()
+        session.add(
+            EvidenceLifecycleEvent(
+                org_id=org_id,
+                assertion_id=assertion.id,
+                state="REVOKED",
+                reason="repair-06 regression",
+            )
+        )
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(
+            session,
+            org_id,
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
+    assert assessment.conclusion == "REVIEW"
+
+
+def test_duplicate_one_unit_assertions_do_not_satisfy_two_unit_requirement(
+    runtime_factory, worker_factory, settings
+) -> None:
+    """Coverage is checked against one exact evidence record; assertions are not summed."""
+    org_id = "org_proof_duplicate_coverage"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(
+            session,
+            settings,
+            org_id=org_id,
+            evidence_quantity=1,
+            required_quantity="2",
+        )
+        original = session.execute(
+            select(EvidenceAssertion).where(EvidenceAssertion.org_id == org_id)
+        ).scalar_one()
+        session.add(
+            EvidenceAssertion(
+                org_id=org_id,
+                evidence_record_id=original.evidence_record_id,
+                source_record_version_id=original.source_record_version_id,
+                proposition_key=original.proposition_key,
+                subject_key=original.subject_key,
+                polarity=original.polarity,
+                fact_path=original.fact_path,
+                asserted_value=original.asserted_value,
+                scope=original.scope,
+                decisive=True,
+            )
+        )
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(
+            session,
+            org_id,
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
+    assert assessment.conclusion == "REVIEW"
+
+
+def test_exact_numeric_coverage_can_satisfy_required_quantity(
+    runtime_factory, worker_factory, settings
+) -> None:
+    org_id = "org_proof_sufficient_coverage"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(
+            session,
+            settings,
+            org_id=org_id,
+            evidence_quantity=2,
+            required_quantity="2",
+        )
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(
+            session,
+            org_id,
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
+    assert assessment.conclusion == "SYNTHETIC_CLAIM_READY"
+    assert assessment.recoverable_minor == 200
 
 
 def test_worker_constructor_publishes_trusted_synthetic_two_dollar_control(
