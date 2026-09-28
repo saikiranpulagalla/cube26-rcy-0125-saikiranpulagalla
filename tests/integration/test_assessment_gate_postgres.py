@@ -31,7 +31,7 @@ from recovery_manager.models import (
 )
 
 
-def _register_synthetic_profile(settings, org_id: str, fixture_sha256: str) -> None:
+def _register_synthetic_profile(settings, org_id: str, fixture_sha256: str, permitted_minor: int = 800) -> None:
     owner_factory = sessionmaker(
         bind=create_engine(settings.migration_database_url, future=True), future=True
     )
@@ -48,7 +48,7 @@ def _register_synthetic_profile(settings, org_id: str, fixture_sha256: str) -> N
             applicability={
                 **provenance,
                 "proposition_key": "synthetic-invalid-fee",
-                "permitted_amount_minor": 800,
+                "permitted_amount_minor": permitted_minor,
             },
             raw_text="SYNTHETIC MECHANICS — NOT ORGANIZER GROUND TRUTH OR REAL CHANNEL POLICY",
             lifecycle_state="ACTIVE",
@@ -81,6 +81,11 @@ def _assess_synthetic_candidate(
     fixture_payload: dict[str, object] | None = None,
     registered_fixture_payload: dict[str, object] | None = None,
     register_profile: bool = True,
+    entitlement_minor: int = 200,
+    event_amount_minor: int = 1000,
+    event_direction: str = "DEBIT",
+    permitted_minor: int = 800,
+    derivation_currency: str = "USD",
 ):
     """Build a complete mechanics candidate, varying one proof premise at a time."""
     set_local_tenant(session, org_id)
@@ -103,7 +108,7 @@ def _assess_synthetic_candidate(
     ).hexdigest()
     provenance = {"fixture_profile": "synthetic-mechanics-v1", "fixture_sha256": fixture_sha256}
     if register_profile:
-        _register_synthetic_profile(settings, org_id, fixture_sha256)
+        _register_synthetic_profile(settings, org_id, fixture_sha256, permitted_minor)
     source = SourceRecordVersion(
         org_id=org_id,
         source_kind="synthetic",
@@ -118,8 +123,8 @@ def _assess_synthetic_candidate(
         org_id=org_id,
         source_record_version_id=source.id,
         event_type="SYNTHETIC_FEE",
-        direction="DEBIT",
-        amount_minor=1000,
+        direction=event_direction,
+        amount_minor=event_amount_minor,
         currency="USD",
         quantity=1,
         posting_time=None,
@@ -205,10 +210,10 @@ def _assess_synthetic_candidate(
                 org_id=org_id,
                 obligation_id=obligation.id,
                 derivation_version=1,
-                currency="USD",
-                observed_amount_minor=1000,
-                expected_amount_minor=800,
-                justified_entitlement_minor=200,
+                currency=derivation_currency,
+                observed_amount_minor=event_amount_minor,
+                expected_amount_minor=permitted_minor,
+                justified_entitlement_minor=entitlement_minor,
                 rounding_rule="integer minor units",
                 basis_class="SYNTHETIC_ONLY",
                 source_basis=provenance,
@@ -305,6 +310,44 @@ def test_same_digest_does_not_transfer_synthetic_authority_across_tenants(runtim
     with worker_factory() as session, session.begin():
         set_local_tenant(session, "org_authority_bravo")
         assert assess_synthetic(session, "org_authority_bravo", obligation_id, "SYN-FEE-001", "synthetic-invalid-fee", synthetic_capability_enabled=True).conclusion == "REVIEW"
+
+
+@pytest.mark.parametrize(("stored_minor", "expected"), ((0, "REVIEW"), (100, "REVIEW"), (200, "SYNTHETIC_CLAIM_READY"), (300, "REVIEW")))
+def test_stored_entitlement_must_equal_deterministic_event_minus_pinned_rule(runtime_factory, worker_factory, settings, stored_minor: int, expected: str) -> None:
+    org_id = f"org_entitlement_{stored_minor}"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(session, settings, org_id=org_id, entitlement_minor=stored_minor)
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(session, org_id, obligation_id, "SYN-FEE-001", "synthetic-invalid-fee", synthetic_capability_enabled=True)
+        assert assessment.conclusion == expected
+        if expected == "SYNTHETIC_CLAIM_READY":
+            assert assessment.recoverable_minor == 200
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    (
+        {"event_direction": "CREDIT", "entitlement_minor": 200},
+        {"derivation_currency": "EUR", "entitlement_minor": 200},
+        {"event_amount_minor": 800, "entitlement_minor": 0, "expected": "RESOLVED"},
+    ),
+)
+def test_non_debit_currency_and_zero_synthetic_derivations_are_not_claim_ready(runtime_factory, worker_factory, settings, kwargs: dict[str, object]) -> None:
+    expected = kwargs.pop("expected", "REVIEW")
+    org_id = f"org_derivation_guard_{len(kwargs)}_{kwargs.get('event_amount_minor', 1000)}"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(session, settings, org_id=org_id, **kwargs)
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assert assess_synthetic(session, org_id, obligation_id, "SYN-FEE-001", "synthetic-invalid-fee", synthetic_capability_enabled=True).conclusion == expected
+
+
+def test_negative_entitlement_is_rejected_by_database(runtime_factory, settings) -> None:
+    """Frozen semantics: negative recovery cannot be stored or made positive by assessment."""
+    with runtime_factory() as session, session.begin():
+        with pytest.raises(DBAPIError):
+            _assess_synthetic_candidate(session, settings, org_id="org_negative_entitlement", event_amount_minor=700, entitlement_minor=-100)
 
 
 @pytest.mark.parametrize("lifecycle", ("SUPERSEDED", "REVOKED"))
