@@ -25,6 +25,7 @@ from recovery_manager.models import (
     PursuitAllocation,
     ReconciliationState,
     RecoveryAssessment,
+    SourceRecordVersion,
     SyntheticFixtureProfile,
     SyntheticPacketReservation,
     TenantState,
@@ -177,6 +178,16 @@ def assess_synthetic(
         if obligation.financial_event_id is not None
         else None
     )
+    fixture_source = (
+        session.execute(
+            select(SourceRecordVersion).where(
+                SourceRecordVersion.org_id == org_id,
+                SourceRecordVersion.id == financial_event.source_record_version_id,
+            )
+        ).scalar_one_or_none()
+        if financial_event is not None
+        else None
+    )
     found = discover_assertions(session, org_id, subject_key, proposition_key, limit=100)
     residual = residual_for_obligation(session, org_id, obligation_id)
     reconciliation: dict[str, str] = {}
@@ -219,6 +230,9 @@ def assess_synthetic(
     )
     policy_applies = (
         policy is not None
+        and profile is not None
+        and fixture_source is not None
+        and fixture_source.content_sha256 == profile.fixture_sha256
         and policy.applicability.get("fixture_profile") == fixture_profile
         and policy.applicability.get("fixture_sha256") == fixture_sha256
         and policy.applicability.get("proposition_key") == proposition_key

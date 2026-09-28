@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, update
+from sqlalchemy import create_engine, select, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import sessionmaker
 
@@ -28,11 +31,11 @@ from recovery_manager.models import (
 )
 
 
-def _register_synthetic_profile(settings, org_id: str) -> None:
+def _register_synthetic_profile(settings, org_id: str, fixture_sha256: str) -> None:
     owner_factory = sessionmaker(
         bind=create_engine(settings.migration_database_url, future=True), future=True
     )
-    provenance = {"fixture_profile": "synthetic-mechanics-v1", "fixture_sha256": "a" * 64}
+    provenance = {"fixture_profile": "synthetic-mechanics-v1", "fixture_sha256": fixture_sha256}
     with owner_factory() as session, session.begin():
         set_local_tenant(session, org_id)
         policy = PolicySourceVersion(
@@ -75,9 +78,11 @@ def _assess_synthetic_candidate(
     mismatched_source_version: bool = False,
     polarity: str = "SUPPORTS",
     reconciliation_state: str | None = "RECONCILED_NONE",
+    fixture_payload: dict[str, object] | None = None,
+    registered_fixture_payload: dict[str, object] | None = None,
+    register_profile: bool = True,
 ):
     """Build a complete mechanics candidate, varying one proof premise at a time."""
-    _register_synthetic_profile(settings, org_id)
     set_local_tenant(session, org_id)
     accept_input(
         session,
@@ -88,14 +93,24 @@ def _assess_synthetic_candidate(
         f"candidate-{org_id}",
         settings,
     )
-    provenance = {"fixture_profile": "synthetic-mechanics-v1", "fixture_sha256": "a" * 64}
+    payload = fixture_payload if fixture_payload is not None else {"fee": {"valid": source_value}}
+    actual_fixture_sha256 = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    trusted_payload = registered_fixture_payload if registered_fixture_payload is not None else payload
+    fixture_sha256 = hashlib.sha256(
+        json.dumps(trusted_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    provenance = {"fixture_profile": "synthetic-mechanics-v1", "fixture_sha256": fixture_sha256}
+    if register_profile:
+        _register_synthetic_profile(settings, org_id, fixture_sha256)
     source = SourceRecordVersion(
         org_id=org_id,
         source_kind="synthetic",
         source_record_id="SYN-FEE-001",
-        content_sha256="c" * 64,
+        content_sha256=actual_fixture_sha256,
         declared_org_id=org_id,
-        payload={"fee": {"valid": source_value}},
+        payload=payload,
     )
     session.add(source)
     session.flush()
@@ -253,6 +268,138 @@ def test_worker_constructor_publishes_trusted_synthetic_two_dollar_control(
         )
         assert assessment.conclusion == "SYNTHETIC_CLAIM_READY"
         assert assessment.recoverable_minor == 200
+
+
+def test_copied_authority_strings_do_not_authorize_altered_fixture_content(
+    runtime_factory, worker_factory, settings
+) -> None:
+    """A-005 reproduction: source-basis strings currently are not bound to fixture bytes."""
+    org_id = "org_authority_altered_fixture"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(
+            session,
+            settings,
+            org_id=org_id,
+            fixture_payload={"fee": {"valid": True, "altered": "attacker-controlled"}},
+            registered_fixture_payload={"fee": {"valid": True}},
+        )
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(
+            session,
+            org_id,
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
+    assert assessment.conclusion == "REVIEW"
+
+
+def test_same_digest_does_not_transfer_synthetic_authority_across_tenants(runtime_factory, worker_factory, settings) -> None:
+    payload = {"fee": {"valid": True}}
+    with runtime_factory() as session, session.begin():
+        _assess_synthetic_candidate(session, settings, org_id="org_authority_alpha", fixture_payload=payload)
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(session, settings, org_id="org_authority_bravo", fixture_payload=payload, register_profile=False)
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, "org_authority_bravo")
+        assert assess_synthetic(session, "org_authority_bravo", obligation_id, "SYN-FEE-001", "synthetic-invalid-fee", synthetic_capability_enabled=True).conclusion == "REVIEW"
+
+
+@pytest.mark.parametrize("lifecycle", ("SUPERSEDED", "REVOKED"))
+def test_pinned_non_active_synthetic_policy_cannot_publish_new_ready_assessment(
+    runtime_factory, worker_factory, settings, lifecycle: str
+) -> None:
+    org_id = f"org_policy_{lifecycle.lower()}"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(session, settings, org_id=org_id)
+    owner_factory = sessionmaker(bind=create_engine(settings.migration_database_url, future=True), future=True)
+    with owner_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        session.execute(
+            update(PolicySourceVersion)
+            .where(PolicySourceVersion.org_id == org_id)
+            .values(lifecycle_state=lifecycle)
+        )
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assert assess_synthetic(session, org_id, obligation_id, "SYN-FEE-001", "synthetic-invalid-fee", synthetic_capability_enabled=True).conclusion == "REVIEW"
+
+
+def test_profile_pins_exact_policy_version_despite_duplicate_logical_key(runtime_factory, worker_factory, settings) -> None:
+    org_id = "org_policy_version_pin"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(session, settings, org_id=org_id)
+    owner_factory = sessionmaker(bind=create_engine(settings.migration_database_url, future=True), future=True)
+    with owner_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        session.add(PolicySourceVersion(org_id=org_id, policy_key="SYN-VALID-FEE-8", authority_class="SYNTHETIC", content_sha256="f" * 64, effective_from=None, effective_to=None, applicability={"permitted_amount_minor": 1}, raw_text="untrusted duplicate logical key", lifecycle_state="ACTIVE"))
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(session, org_id, obligation_id, "SYN-FEE-001", "synthetic-invalid-fee", synthetic_capability_enabled=True)
+        assert assessment.conclusion == "SYNTHETIC_CLAIM_READY"
+        assert assessment.recoverable_minor == 200
+
+
+def test_runtime_roles_cannot_mutate_trusted_fixture_registry(runtime_factory, worker_factory, settings) -> None:
+    org_id = "org_registry_runtime_denial"
+    with runtime_factory() as session, session.begin():
+        _assess_synthetic_candidate(session, settings, org_id=org_id)
+        set_local_tenant(session, org_id)
+        profile = session.execute(select(SyntheticFixtureProfile)).scalar_one()
+        for operation in (
+            lambda: session.add(SyntheticFixtureProfile(org_id=org_id, fixture_profile="forged", fixture_sha256="0" * 64, policy_source_version_id=profile.policy_source_version_id)),
+            lambda: session.execute(update(SyntheticFixtureProfile).values(fixture_sha256="1" * 64)),
+            lambda: session.execute(SyntheticFixtureProfile.__table__.delete()),
+        ):
+            with pytest.raises(DBAPIError):
+                with session.begin_nested():
+                    operation()
+                    session.flush()
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        for operation in (
+            lambda: session.add(SyntheticFixtureProfile(org_id=org_id, fixture_profile="worker-forged", fixture_sha256="2" * 64, policy_source_version_id=uuid4())),
+            lambda: session.execute(update(SyntheticFixtureProfile).values(fixture_sha256="2" * 64)),
+            lambda: session.execute(SyntheticFixtureProfile.__table__.delete()),
+        ):
+            with pytest.raises(DBAPIError):
+                with session.begin_nested():
+                    operation()
+                    session.flush()
+
+
+def test_pinned_policy_never_falls_back_to_another_active_same_key(runtime_factory, worker_factory, settings) -> None:
+    org_id = "org_policy_no_fallback"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(session, settings, org_id=org_id)
+    owner_factory = sessionmaker(bind=create_engine(settings.migration_database_url, future=True), future=True)
+    with owner_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        session.add(PolicySourceVersion(org_id=org_id, policy_key="SYN-VALID-FEE-8", authority_class="SYNTHETIC", content_sha256="9" * 64, effective_from=None, effective_to=None, applicability={}, raw_text="alternate active", lifecycle_state="ACTIVE"))
+        session.execute(update(PolicySourceVersion).where(PolicySourceVersion.org_id == org_id, PolicySourceVersion.content_sha256 != "9" * 64).values(lifecycle_state="REVOKED"))
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assert assess_synthetic(session, org_id, obligation_id, "SYN-FEE-001", "synthetic-invalid-fee", synthetic_capability_enabled=True).conclusion == "REVIEW"
+
+
+@pytest.mark.parametrize(("offset", "expected"), ((timedelta(days=1), "REVIEW"), (timedelta(0), "SYNTHETIC_CLAIM_READY"), (timedelta(days=-1), "REVIEW")))
+def test_pinned_policy_effective_period_controls_new_assessments(runtime_factory, worker_factory, settings, offset: timedelta, expected: str) -> None:
+    org_id = f"org_policy_period_{offset.days}"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(session, settings, org_id=org_id)
+    owner_factory = sessionmaker(bind=create_engine(settings.migration_database_url, future=True), future=True)
+    now = datetime.now(UTC)
+    with owner_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        if offset > timedelta(0):
+            session.execute(update(PolicySourceVersion).where(PolicySourceVersion.org_id == org_id).values(effective_from=now + offset, effective_to=None))
+        elif offset < timedelta(0):
+            session.execute(update(PolicySourceVersion).where(PolicySourceVersion.org_id == org_id).values(effective_from=None, effective_to=now + offset))
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assert assess_synthetic(session, org_id, obligation_id, "SYN-FEE-001", "synthetic-invalid-fee", synthetic_capability_enabled=True).conclusion == expected
 
 
 def test_export_consumes_real_worker_published_synthetic_assessment(
