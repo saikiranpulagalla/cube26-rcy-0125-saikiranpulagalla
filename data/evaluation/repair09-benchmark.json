@@ -1,0 +1,20 @@
+{
+  "benchmark_version": "repair09-v1",
+  "cases": [
+    {
+      "scenario_id": "holdout/synthetic-valid", "dependency_group": "synthetic-valid-family", "dependency_ids": ["synthetic-source-v1", "policy-synthetic-v1", "financial-event-valid"],
+      "stratum": "SYNTHETIC_MECHANICS", "expected_recommendation": "SYNTHETIC_CLAIM_READY", "expected_amount_minor": 200,
+      "predicted_recommendation": "REVIEW", "predicted_amount_minor": null,
+      "expected_opportunity_id": "synthetic-valid-opportunity", "predicted_opportunity_id": "", "expected_obligation_id": "synthetic-valid-obligation", "predicted_obligation_id": null,
+      "expected_basis": "INVALID_FEE", "predicted_basis": "", "expected_currency": "USD", "predicted_currency": null,
+      "required_evidence": ["SYNTHETIC_VALID_FEE|synthetic-source-v1|SYN-FEE-001|fee.valid"], "predicted_evidence": []
+    },
+    {
+      "scenario_id": "holdout/policy-unavailable", "dependency_group": "ordinary-policy-family", "dependency_ids": ["ordinary-source-v1", "ordinary-event"],
+      "stratum": "POLICY_UNAVAILABLE", "expected_recommendation": "REVIEW", "expected_amount_minor": null,
+      "predicted_recommendation": "REVIEW", "predicted_amount_minor": null,
+      "expected_opportunity_id": "ordinary-opportunity", "predicted_opportunity_id": "", "expected_basis": "INVALID_FEE", "predicted_basis": "", "expected_currency": "USD", "predicted_currency": null,
+      "required_evidence": [], "predicted_evidence": []
+    }
+  ]
+}
