@@ -97,6 +97,45 @@ def test_engine_benchmark_rejects_recorded_prediction_oracles(tmp_path: Path) ->
         load_engine_benchmark(manifest)
 
 
+@pytest.mark.parametrize(
+    "forbidden_setup",
+    (
+        '{"prediction":{"recommendation":"REVIEW"}}',
+        '{"nested":{"predicted_amount":200}}',
+        '{"engine_output":{"recommendation":"REVIEW"}}',
+    ),
+)
+def test_engine_benchmark_rejects_nested_prediction_oracles(
+    tmp_path: Path, forbidden_setup: str
+) -> None:
+    manifest = tmp_path / "engine.json"
+    manifest.write_text(
+        "{"
+        '\"schema_version\":\"recovery-engine-benchmark/v1\",'
+        '\"cases\":[{\"case_id\":\"x\",\"stratum\":\"SYNTHETIC_MECHANICS\",'
+        f'\"setup\":{forbidden_setup},'
+        '\"ground_truth\":{\"opportunity_id\":\"opp\",\"obligation_id\":\"obl\",'
+        '\"required_evidence_ids\":[]}}]}' ,
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="recorded predictions"):
+        load_engine_benchmark(manifest)
+
+
+def test_engine_benchmark_rejects_unsupported_setup_fields(tmp_path: Path) -> None:
+    manifest = tmp_path / "engine.json"
+    manifest.write_text(
+        '{"schema_version":"recovery-engine-benchmark/v1","cases":['
+        '{"case_id":"x","stratum":"SYNTHETIC_MECHANICS",'
+        '"setup":{"unconsumed":true},'
+        '"ground_truth":{"opportunity_id":"opp","obligation_id":"obl",'
+        '"required_evidence_ids":[]}}]}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="unsupported benchmark setup fields"):
+        load_engine_benchmark(manifest)
+
+
 def test_report_renders_execution_provenance_from_one_result_model(tmp_path: Path) -> None:
     report = {
         "benchmark": "engine", "runner_mode": "real_engine",

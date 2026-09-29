@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import Session, sessionmaker
 
 from recovery_manager.config import Settings
@@ -89,3 +89,38 @@ def assert_runtime_ready(engine: Engine, settings: Settings, *, required_role: s
         ).mappings().all()
         if len(protected) != 20 or any(not row["relrowsecurity"] or not row["relforcerowsecurity"] for row in protected):
             raise RuntimeError("Protected table RLS is incomplete")
+
+
+def assert_benchmark_ready(settings: Settings) -> None:
+    """Fail before benchmark provisioning unless all roles target one designated database."""
+    if not settings.benchmark_database:
+        raise RuntimeError("Benchmark execution requires RECOVERY_BENCHMARK_DATABASE=true")
+    endpoints = (
+        ("runtime", settings.database_url, "recovery_app"),
+        ("worker", settings.worker_database_url, "recovery_worker"),
+        ("owner", settings.migration_database_url, "recovery_owner"),
+    )
+    identities: list[tuple[str, int, str]] = []
+    for label, url_text, expected_role in endpoints:
+        url = make_url(url_text)
+        if url.drivername != "postgresql+psycopg" or not url.host or url.query:
+            raise RuntimeError(f"Benchmark {label} database URL is not an isolated PostgreSQL endpoint")
+        engine = create_engine(url, pool_pre_ping=True, future=True)
+        try:
+            with engine.connect() as connection:
+                current_role, database, server_address, server_port = connection.execute(
+                    text(
+                        "SELECT current_user, current_database(), "
+                        "COALESCE(inet_server_addr()::text, ''), inet_server_port()"
+                    )
+                ).one()
+                if current_role != expected_role:
+                    raise RuntimeError(f"Benchmark {label} role is not {expected_role}")
+                revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
+                if revision != EXPECTED_MIGRATION_HEAD:
+                    raise RuntimeError("Benchmark database migration is not current")
+                identities.append((str(server_address), int(server_port), str(database)))
+        finally:
+            engine.dispose()
+    if len(set(identities)) != 1:
+        raise RuntimeError("Benchmark runtime, worker, and owner endpoints must target one database")

@@ -13,6 +13,7 @@ from recovery_manager.benchmark_provisioning import SyntheticRecoverySetup
 from recovery_manager.canonical import canonicalize_fixture
 from recovery_manager.config import Settings, get_settings
 from recovery_manager.db import (
+    assert_benchmark_ready,
     assert_runtime_ready,
     make_engine,
     make_session_factory,
@@ -153,17 +154,15 @@ def evaluate(
     if not manifest.is_file():
         raise typer.BadParameter("Evaluation manifest does not exist", param_hint="manifest")
     metadata, cases = load_engine_benchmark(manifest)
-    settings, runtime = _dependencies()
+    settings = get_settings()
+    assert_benchmark_ready(settings)
+    _, runtime = _dependencies()
     _, worker = _worker_dependencies()
     adapter = RecoveryEngineBenchmarkAdapter(runtime, worker, settings)
     scored: list[EvaluationCase] = []
     executions: list[dict[str, object]] = []
     for case in cases:
-        setup = SyntheticRecoverySetup(
-            evidence=str(case.setup.get("evidence", "valid")),
-            reconciliation=str(case.setup.get("reconciliation", "RECONCILED_NONE")),
-            policy_available=case.setup.get("kind") != "ordinary",
-        )
+        setup = SyntheticRecoverySetup.from_manifest(case.setup)
         execution = adapter.run(setup)
         truth = case.ground_truth
         prediction = execution.prediction
@@ -172,8 +171,10 @@ def evaluate(
             dependency_ids=case.dependency_ids, stratum=case.stratum,
             expected_recommendation=str(truth["recommendation"]), expected_amount_minor=truth["amount_minor"],
             predicted_recommendation=prediction.predicted_recommendation, predicted_amount_minor=prediction.predicted_amount_minor,
-            expected_opportunity_id=str(truth["opportunity_id"]), predicted_opportunity_id=case.case_id,
-            expected_obligation_id=str(truth["obligation_id"]), predicted_obligation_id=case.case_id,
+            expected_opportunity_id=str(truth["opportunity_id"]),
+            predicted_opportunity_id=prediction.predicted_opportunity_id,
+            expected_obligation_id=str(truth["obligation_id"]),
+            predicted_obligation_id=prediction.predicted_obligation_id,
             expected_basis=str(truth["basis"]), predicted_basis=prediction.predicted_basis,
             expected_currency=truth["currency"], predicted_currency=prediction.predicted_currency,
             required_evidence=frozenset(truth["required_evidence_ids"]), predicted_evidence=prediction.predicted_evidence,

@@ -9,9 +9,24 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from recovery_manager.benchmark_provisioning import SyntheticRecoverySetup
+
 READY = "SYNTHETIC_CLAIM_READY"
 DETERMINATE = frozenset({READY, "RESOLVED", "ALREADY_PURSUED", "NO_CLAIM"})
 _PREDICTION_KEYS = frozenset({"prediction", "engine_output", "actual_output"})
+
+
+def _contains_recorded_prediction(value: object) -> bool:
+    if isinstance(value, dict):
+        return any(
+            key.startswith("predicted_")
+            or key in _PREDICTION_KEYS
+            or _contains_recorded_prediction(child)
+            for key, child in value.items()
+        )
+    if isinstance(value, list):
+        return any(_contains_recorded_prediction(child) for child in value)
+    return False
 
 
 @dataclass(frozen=True)
@@ -35,11 +50,12 @@ def load_engine_benchmark(path: Path) -> tuple[dict[str, Any], list[EngineBenchm
     for item in cases:
         if not isinstance(item, dict):
             raise ValueError("engine benchmark case must be an object")
-        if any(key.startswith("predicted_") or key in _PREDICTION_KEYS for key in item):
+        if _contains_recorded_prediction(item):
             raise ValueError("engine benchmark must not contain recorded predictions")
         setup, truth = item.get("setup"), item.get("ground_truth")
         if not isinstance(setup, dict) or not isinstance(truth, dict):
             raise ValueError("engine benchmark case requires setup and ground_truth objects")
+        SyntheticRecoverySetup.from_manifest(setup)
         for key in ("opportunity_id", "obligation_id", "required_evidence_ids"):
             if key not in truth:
                 raise ValueError(f"engine benchmark ground_truth requires {key}")

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from recovery_manager.assessment import assess_synthetic, current_assessment
 from recovery_manager.benchmark_provisioning import (
     SyntheticRecoverySetup,
+    configure_benchmark_transaction,
     provision_synthetic_recovery_case,
     register_synthetic_authority,
 )
@@ -34,9 +35,11 @@ class RecoveryEngineBenchmarkAdapter:
         with self.runtime() as session, session.begin():
             provisioned = provision_synthetic_recovery_case(session, self.settings, org_id, setup)
         with self.worker() as session, session.begin():
+            configure_benchmark_transaction(session)
             set_local_tenant(session, org_id)
             assessment = assess_synthetic(session, org_id, provisioned.obligation_id, "SYN-FEE-001", "synthetic-invalid-fee", synthetic_capability_enabled=True)
         with self.runtime() as session, session.begin():
+            configure_benchmark_transaction(session)
             set_local_tenant(session, org_id)
             stored = session.execute(select(RecoveryAssessment).where(RecoveryAssessment.org_id == org_id, RecoveryAssessment.id == assessment.id)).scalar_one()
             current = current_assessment(session, org_id, provisioned.obligation_id)
@@ -49,14 +52,42 @@ class RecoveryEngineBenchmarkAdapter:
         recovery_basis = obligation_snapshot.get("recovery_basis")
         if recovery_basis is not None and not isinstance(recovery_basis, str):
             raise RuntimeError("published assessment has an invalid recovery basis")
+        snapshot_obligation = obligation_snapshot.get("id")
+        snapshot_opportunity = obligation_snapshot.get("financial_event_id")
+        if not isinstance(snapshot_obligation, str) or not isinstance(snapshot_opportunity, str):
+            raise RuntimeError("published assessment is missing its pinned identities")
+
+        def reverse(mapping: dict[str, object], actual: str, label: str) -> str:
+            matched = [logical for logical, value in mapping.items() if str(value) == actual]
+            if len(matched) != 1:
+                raise RuntimeError(f"published assessment has an unmapped {label}")
+            return matched[0]
+
+        logical_opportunity = reverse(
+            dict(provisioned.logical_opportunities), snapshot_opportunity, "opportunity"
+        )
+        logical_obligation = reverse(
+            dict(provisioned.logical_obligations), snapshot_obligation, "obligation"
+        )
         snapshot_evidence = snapshot.get("evidence", [])
         if not isinstance(snapshot_evidence, list) or not all(
             isinstance(entry, dict) and isinstance(entry.get("evidence_record_id"), str)
             for entry in snapshot_evidence
         ):
             raise RuntimeError("published assessment has an invalid evidence snapshot")
-        evidence_ids = {entry["evidence_record_id"] for entry in snapshot_evidence}
         evidence = frozenset(
-            key for key, value in provisioned.logical_evidence.items() if str(value) in evidence_ids
+            reverse(dict(provisioned.logical_evidence), entry["evidence_record_id"], "evidence")
+            for entry in snapshot_evidence
         )
-        return EngineExecution(EvaluationCase("engine/result", "engine", "SYNTHETIC_MECHANICS", "REVIEW", None, stored.conclusion, stored.recoverable_minor, expected_opportunity_id="", predicted_opportunity_id="", expected_obligation_id=None, predicted_obligation_id=str(provisioned.obligation_id), expected_basis="", predicted_basis=recovery_basis, expected_currency=None, predicted_currency=stored.currency, predicted_evidence=evidence), str(stored.id))
+        return EngineExecution(
+            EvaluationCase(
+                "engine/result", "engine", "SYNTHETIC_MECHANICS", "REVIEW", None,
+                stored.conclusion, stored.recoverable_minor,
+                expected_opportunity_id="", predicted_opportunity_id=logical_opportunity,
+                expected_obligation_id=None, predicted_obligation_id=logical_obligation,
+                expected_basis="", predicted_basis=recovery_basis,
+                expected_currency=None, predicted_currency=stored.currency,
+                predicted_evidence=evidence,
+            ),
+            str(stored.id),
+        )

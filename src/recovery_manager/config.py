@@ -30,6 +30,7 @@ class Settings(BaseSettings):
         "postgresql+psycopg://recovery_worker:change-me@localhost:5432/recovery"
     )
     database_required: bool = True
+    benchmark_database: bool = False
     max_input_bytes: int = Field(default=1_048_576, ge=1, le=16_777_216)
     demo_fixtures_enabled: bool = False
     development_mode: bool = False
