@@ -1,0 +1,97 @@
+{
+  "benchmark": "recovery-engine-synthetic-v1",
+  "engine_benchmarked_revision": "6fad2ab078fddfd7a8e4f1df675b18257e4ede5c",
+  "executions": [
+    {
+      "amount_minor": 200,
+      "assessment_id": "6ca779bd-8030-4232-a065-0bb77897bccd",
+      "basis": "INVALID_FEE",
+      "case_id": "synthetic-positive",
+      "currency": "USD",
+      "evidence": [
+        "E-FEE-VALID"
+      ],
+      "recommendation": "SYNTHETIC_CLAIM_READY",
+      "stratum": "SYNTHETIC_MECHANICS"
+    },
+    {
+      "amount_minor": null,
+      "assessment_id": "b560e447-a724-49cd-99a6-97a3e2763e3b",
+      "basis": "INVALID_FEE",
+      "case_id": "synthetic-evidence-insufficient",
+      "currency": null,
+      "evidence": [
+        "E-FEE-VALID"
+      ],
+      "recommendation": "REVIEW",
+      "stratum": "SYNTHETIC_MECHANICS"
+    },
+    {
+      "amount_minor": null,
+      "assessment_id": "e0036921-821c-4fad-911b-b7399967be15",
+      "basis": "INVALID_FEE",
+      "case_id": "synthetic-reconciliation-unknown",
+      "currency": null,
+      "evidence": [
+        "E-FEE-VALID"
+      ],
+      "recommendation": "REVIEW",
+      "stratum": "SYNTHETIC_MECHANICS"
+    },
+    {
+      "amount_minor": null,
+      "assessment_id": "a9ae7333-6308-4b6f-affd-2be802750083",
+      "basis": "INVALID_FEE",
+      "case_id": "policy-unavailable",
+      "currency": null,
+      "evidence": [
+        "E-FEE-VALID"
+      ],
+      "recommendation": "REVIEW",
+      "stratum": "POLICY_UNAVAILABLE"
+    }
+  ],
+  "results": {
+    "cases": 4,
+    "claims_recommended": 1,
+    "decision_coverage": 0.25,
+    "evidence_attribution_precision": 1.0,
+    "evidence_sufficiency_rate": 1.0,
+    "exact_amount_accuracy": 1.0,
+    "false_exposure_minor": {},
+    "review_rate": 0.75,
+    "strata": {
+      "POLICY_UNAVAILABLE": {
+        "cases": 1,
+        "claims_recommended": 0,
+        "decision_coverage": 0.0,
+        "evidence_attribution_precision": null,
+        "evidence_sufficiency_rate": null,
+        "exact_amount_accuracy": null,
+        "false_exposure_minor": {},
+        "review_rate": 1.0,
+        "strict_claim_precision": null,
+        "strict_claim_recall": null,
+        "strict_true_positives": 0
+      },
+      "SYNTHETIC_MECHANICS": {
+        "cases": 3,
+        "claims_recommended": 1,
+        "decision_coverage": 0.3333333333333333,
+        "evidence_attribution_precision": 1.0,
+        "evidence_sufficiency_rate": 1.0,
+        "exact_amount_accuracy": 1.0,
+        "false_exposure_minor": {},
+        "review_rate": 0.6666666666666666,
+        "strict_claim_precision": 1.0,
+        "strict_claim_recall": 1.0,
+        "strict_true_positives": 1
+      }
+    },
+    "strict_claim_precision": 1.0,
+    "strict_claim_recall": 1.0,
+    "strict_true_positives": 1
+  },
+  "runner_mode": "real_engine",
+  "schema_version": "recovery-engine-benchmark/v1"
+}
