@@ -63,6 +63,46 @@ All five buildathon repos share the same `unit_id` values (`UNIT-0001` … `UNIT
 
 Recovery also gets `data/upstream/`, a copy of the other four files, so you can practise the join before Round 3 integration.
 
+## Quickstart and bounded demo
+
+Recovery Manager uses PostgreSQL 16 and Python 3.12. Copy `.env.example` to `.env`,
+start the isolated PostgreSQL service described in [docs/V01-OPERATIONS.md](docs/V01-OPERATIONS.md),
+and then run:
+
+```bash
+alembic upgrade head
+python -m pytest tests/integration -q
+python -m recovery_manager demo
+python -m recovery_manager evaluate
+uvicorn recovery_manager.api:app --reload
+```
+
+The integration workflow is the reproducible synthetic demo. It executes the production
+assessment and guarded-publication paths for: a USD 2 synthetic claim, partial and full
+settlement, already-pursued recovery, evidence failure, unknown reconciliation, stale
+assessment/export denial, and tenant-scoped historical review. It creates no direct
+`CLAIM_READY` assessment or current-pointer rows.
+
+The evaluation command loads the prediction-free
+`data/evaluation/recovery-engine-benchmark.json`, executes real isolated-PostgreSQL Recovery
+assessment/publication for every case, and writes `artifacts/evaluation/repair09-results.json`
+and `artifacts/evaluation/repair09-results.md`. The JSON artifact is authoritative; the
+Markdown report is derived from it. `repair09-benchmark.json` remains a pure evaluator fixture.
+
+Recovery Manager is deterministic on this path: financial event → evidence → trusted
+synthetic authority → entitlement derivation → reconciliation → assessment → synthetic
+claim packet, REVIEW, RESOLVED, or ALREADY_PURSUED.
+
+### Limits
+
+- Synthetic policy amounts are synthetic. No authoritative operational Amazon recovery
+  policy is bundled; policy-unavailable inputs remain REVIEW.
+- AI does not decide financial readiness. The safety-critical decision path is deterministic.
+- Hashes are provenance and integrity identifiers, not tamper-proof guarantees.
+- Export creates a synthetic claim packet; it does not file a claim with Amazon.
+- Official evidence-contract interoperability remains disabled until authoritative artifacts
+  are available.
+
 ---
 
 ## How this works

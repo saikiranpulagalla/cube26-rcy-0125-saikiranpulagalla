@@ -1,0 +1,34 @@
+{
+  "schema_version": "recovery-engine-benchmark/v1",
+  "benchmark_id": "recovery-engine-synthetic-v1",
+  "cases": [
+    {
+      "case_id": "synthetic-positive",
+      "stratum": "SYNTHETIC_MECHANICS",
+      "dependency_ids": ["synthetic-fee-v1", "synthetic-policy-v1"],
+      "setup": {"kind": "synthetic", "evidence": "valid", "settlement_minor": 0, "pursuit_minor": 0},
+      "ground_truth": {"recommendation": "SYNTHETIC_CLAIM_READY", "amount_minor": 200, "currency": "USD", "basis": "INVALID_FEE", "opportunity_id": "synthetic-positive", "obligation_id": "synthetic-positive", "required_evidence_ids": ["E-FEE-VALID"]}
+    },
+    {
+      "case_id": "synthetic-evidence-insufficient",
+      "stratum": "SYNTHETIC_MECHANICS",
+      "dependency_ids": ["synthetic-fee-v1", "synthetic-policy-v1"],
+      "setup": {"kind": "synthetic", "evidence": "insufficient", "settlement_minor": 0, "pursuit_minor": 0},
+      "ground_truth": {"recommendation": "REVIEW", "amount_minor": null, "currency": null, "basis": "INVALID_FEE", "opportunity_id": "synthetic-evidence-insufficient", "obligation_id": "synthetic-evidence-insufficient", "required_evidence_ids": []}
+    },
+    {
+      "case_id": "synthetic-reconciliation-unknown",
+      "stratum": "SYNTHETIC_MECHANICS",
+      "dependency_ids": ["synthetic-fee-v1", "synthetic-policy-v1"],
+      "setup": {"kind": "synthetic", "evidence": "valid", "reconciliation": "UNKNOWN"},
+      "ground_truth": {"recommendation": "REVIEW", "amount_minor": null, "currency": null, "basis": "INVALID_FEE", "opportunity_id": "synthetic-reconciliation-unknown", "obligation_id": "synthetic-reconciliation-unknown", "required_evidence_ids": []}
+    },
+    {
+      "case_id": "policy-unavailable",
+      "stratum": "POLICY_UNAVAILABLE",
+      "dependency_ids": ["ordinary-source-v1"],
+      "setup": {"kind": "ordinary"},
+      "ground_truth": {"recommendation": "REVIEW", "amount_minor": null, "currency": null, "basis": "INVALID_FEE", "opportunity_id": "policy-unavailable", "obligation_id": "policy-unavailable", "required_evidence_ids": []}
+    }
+  ]
+}

@@ -1,13 +1,28 @@
-# v0.7 evaluation and demo
+# Recovery evaluation results
 
 Evaluation is frozen by dependency group: a group may appear in only one of `dev`,
 `validation`, or locked holdout. Results are always stratified as `SYNTHETIC_MECHANICS`,
 `POLICY_UNAVAILABLE`, or `VERIFIED_POLICY`; this project has no verified-policy cases.
 
+Run `python -m recovery_manager evaluate`. It loads the prediction-free
+`data/evaluation/recovery-engine-benchmark.json`, provisions each case on isolated PostgreSQL,
+runs guarded Recovery assessment publication, reloads the immutable assessment snapshot, and
+only then scores the resulting prediction. It writes machine-readable JSON and derived Markdown
+under `artifacts/evaluation/`.
+
+`data/evaluation/repair09-benchmark.json` remains a pure-evaluator regression fixture. It is not
+the judge-facing engine benchmark and its recorded prediction fields are rejected by the
+authoritative engine-manifest loader.
+
+The current real-engine benchmark has four cases: a valid synthetic USD 2 claim, insufficient
+evidence, unknown reconciliation, and unavailable policy authority. Synthetic mechanics are
+scored separately from policy-unavailable behavior; this is not a measure of operational
+Amazon-policy accuracy.
+
 The evaluator reports strict claim precision/recall, exact amount accuracy, evidence
-attribution precision, evidence sufficiency, decision coverage, review rate,
-policy-unavailable rate, false exposure, and overclaim exposure. A run with no claim
-predictions reports precision as `N/A`, never 100%.
+attribution precision, evidence sufficiency, decision coverage, review rate, and
+currency-separated unsupported exposure. A run with no claim predictions reports precision
+as N/A, never 100%.
 
 ## Judge demo
 

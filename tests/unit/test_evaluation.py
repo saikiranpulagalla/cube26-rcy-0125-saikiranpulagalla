@@ -4,6 +4,7 @@ import pytest
 
 from recovery_manager.evaluation import (
     EvaluationCase,
+    load_engine_benchmark,
     metrics,
     run_manifest,
     validate_split,
@@ -84,3 +85,33 @@ def test_manifest_runner_emits_reproducible_reports(tmp_path: Path) -> None:
     assert report["results"]["cases"] == 2
     assert json_path.exists()
     assert "Operational recovery-policy accuracy" in markdown_path.read_text(encoding="utf-8")
+
+
+def test_engine_benchmark_rejects_recorded_prediction_oracles(tmp_path: Path) -> None:
+    manifest = tmp_path / "engine.json"
+    manifest.write_text(
+        '{"schema_version":"recovery-engine-benchmark/v1","cases":[{"case_id":"x","stratum":"SYNTHETIC_MECHANICS","setup":{},"ground_truth":{},"predicted_recommendation":"REVIEW"}]}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="recorded predictions"):
+        load_engine_benchmark(manifest)
+
+
+def test_report_renders_execution_provenance_from_one_result_model(tmp_path: Path) -> None:
+    report = {
+        "benchmark": "engine", "runner_mode": "real_engine",
+        "engine_benchmarked_revision": "a" * 40, "results": metrics([_case()]),
+        "executions": [{
+            "case_id": "positive", "recommendation": "SYNTHETIC_CLAIM_READY",
+            "basis": "INVALID_FEE", "stratum": "SYNTHETIC_MECHANICS",
+            "currency": "USD", "amount_minor": 200, "evidence": ["E-FEE-VALID"],
+        }],
+    }
+    json_path, markdown_path = tmp_path / "result.json", tmp_path / "result.md"
+    write_report(report, json_path, markdown_path)
+    assert json_path.read_text(encoding="utf-8")
+    markdown = markdown_path.read_text(encoding="utf-8")
+    assert "Runner mode: `real_engine`" in markdown
+    assert f"Engine-benchmarked revision: `{'a' * 40}`" in markdown
+    assert "basis=INVALID_FEE" in markdown
+    assert "stratum=SYNTHETIC_MECHANICS" in markdown

@@ -11,6 +11,49 @@ from typing import Any
 
 READY = "SYNTHETIC_CLAIM_READY"
 DETERMINATE = frozenset({READY, "RESOLVED", "ALREADY_PURSUED", "NO_CLAIM"})
+_PREDICTION_KEYS = frozenset({"prediction", "engine_output", "actual_output"})
+
+
+@dataclass(frozen=True)
+class EngineBenchmarkCase:
+    case_id: str
+    stratum: str
+    dependency_ids: tuple[str, ...]
+    setup: dict[str, Any]
+    ground_truth: dict[str, Any]
+
+
+def load_engine_benchmark(path: Path) -> tuple[dict[str, Any], list[EngineBenchmarkCase]]:
+    """Load a setup-and-truth manifest; stored engine predictions are forbidden."""
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict) or raw.get("schema_version") != "recovery-engine-benchmark/v1":
+        raise ValueError("unsupported engine benchmark schema")
+    cases = raw.get("cases")
+    if not isinstance(cases, list):
+        raise ValueError("engine benchmark requires cases")
+    result: list[EngineBenchmarkCase] = []
+    for item in cases:
+        if not isinstance(item, dict):
+            raise ValueError("engine benchmark case must be an object")
+        if any(key.startswith("predicted_") or key in _PREDICTION_KEYS for key in item):
+            raise ValueError("engine benchmark must not contain recorded predictions")
+        setup, truth = item.get("setup"), item.get("ground_truth")
+        if not isinstance(setup, dict) or not isinstance(truth, dict):
+            raise ValueError("engine benchmark case requires setup and ground_truth objects")
+        for key in ("opportunity_id", "obligation_id", "required_evidence_ids"):
+            if key not in truth:
+                raise ValueError(f"engine benchmark ground_truth requires {key}")
+        if not all(isinstance(truth[key], str) and truth[key] for key in ("opportunity_id", "obligation_id")):
+            raise ValueError("engine benchmark identities must be non-empty strings")
+        if not isinstance(truth["required_evidence_ids"], list) or not all(
+            isinstance(value, str) and value for value in truth["required_evidence_ids"]
+        ):
+            raise ValueError("engine benchmark required_evidence_ids must be strings")
+        result.append(EngineBenchmarkCase(
+            case_id=str(item["case_id"]), stratum=str(item["stratum"]),
+            dependency_ids=tuple(item.get("dependency_ids", [])), setup=setup, ground_truth=truth,
+        ))
+    return raw, result
 
 
 @dataclass(frozen=True)
@@ -30,7 +73,7 @@ class EvaluationCase:
     expected_obligation_id: str | None = None
     predicted_obligation_id: str | None = None
     expected_basis: str = ""
-    predicted_basis: str = ""
+    predicted_basis: str | None = None
     expected_currency: str | None = None
     predicted_currency: str | None = None
     required_evidence: frozenset[str] = field(default_factory=frozenset)
@@ -148,14 +191,32 @@ def write_report(report: dict[str, Any], json_path: Path, markdown_path: Path) -
     """Write deterministic machine and human-readable evaluation artifacts."""
     json_path.write_text(json.dumps(report, indent=2, sort_keys=True, default=list) + "\n", encoding="utf-8")
     result = report["results"]
+    execution_lines = ["", "## Engine executions", ""]
+    for execution in report.get("executions", []):
+        execution_lines.append(
+            "- `{case_id}`: recommendation={recommendation}; basis={basis}; "
+            "stratum={stratum}; currency={currency}; amount_minor={amount_minor}; "
+            "evidence={evidence}".format(
+                case_id=execution["case_id"],
+                recommendation=execution["recommendation"],
+                basis=execution.get("basis"),
+                stratum=execution.get("stratum"),
+                currency=execution.get("currency"),
+                amount_minor=execution.get("amount_minor"),
+                evidence=", ".join(execution.get("evidence", [])),
+            )
+        )
     markdown_path.write_text(
         "\n".join((
             "# Recovery evaluation report", "", f"Benchmark: `{report['benchmark']}`",
+            f"Runner mode: `{report.get('runner_mode')}`",
+            f"Engine-benchmarked revision: `{report.get('engine_benchmarked_revision')}`",
             f"Cases: {result['cases']}", f"Strict claim precision: {result['strict_claim_precision']}",
             f"Decision coverage: {result['decision_coverage']}",
             f"Unsupported exposure by currency: {result['false_exposure_minor']}", "",
             "Synthetic-mechanics results validate the deterministic synthetic contract only.",
             "Operational recovery-policy accuracy is not measured because authoritative operational policy is unavailable.",
+            *execution_lines,
         )) + "\n",
         encoding="utf-8",
     )
