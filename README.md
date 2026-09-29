@@ -65,22 +65,41 @@ Recovery also gets `data/upstream/`, a copy of the other four files, so you can 
 
 ## Quickstart and bounded demo
 
-Recovery Manager uses PostgreSQL 16 and Python 3.12. Copy `.env.example` to `.env`,
-start the isolated PostgreSQL service described in [docs/V01-OPERATIONS.md](docs/V01-OPERATIONS.md),
-and then run:
+Recovery Manager uses Python 3.12 and PostgreSQL 16. From a fresh shell, copy
+`.env.example` to an uncommitted `.env`, replace its password placeholders, and start the
+loopback-only PostgreSQL service. The bootstrap creates separate `recovery_owner`,
+`recovery_app`, and `recovery_worker` roles; keep all three URLs pointed at the same isolated
+database. Set `RECOVERY_BENCHMARK_DATABASE=true` only for that isolated demo/benchmark database.
+
+```bash
+python -m pip install -e ".[dev]"
+docker compose up -d postgres
+alembic upgrade head
+```
+
+Use an explicit local development credential mapping in `.env` when invoking the demo. Its format is:
+
+```text
+RECOVERY_DEVELOPMENT_MODE=true
+RECOVERY_DEV_CREDENTIALS={"local-token":{"org_id":"demo_org","actor_id":"demo_operator","role":"operator"}}
+RECOVERY_BENCHMARK_DATABASE=true
+```
+
+Then run:
 
 ```bash
 alembic upgrade head
-python -m pytest tests/integration -q
+RECOVERY_REQUIRE_POSTGRES=true python -m pytest tests -q
 python -m recovery_manager demo
 python -m recovery_manager evaluate
 uvicorn recovery_manager.api:app --reload
 ```
 
-The integration workflow is the reproducible synthetic demo. It executes the production
-assessment and guarded-publication paths for: a USD 2 synthetic claim, partial and full
-settlement, already-pursued recovery, evidence failure, unknown reconciliation, stale
-assessment/export denial, and tenant-scoped historical review. It creates no direct
+The demo is application-owned orchestration: it provisions fresh synthetic world state, runs
+the worker assessment and guarded publication, reloads each immutable assessment, and prints
+the actual assessment IDs, logical/persisted identities, evidence, ledger state, and outcome.
+It covers a USD 2 synthetic claim, insufficient evidence, unknown reconciliation, unavailable
+policy, partial/full settlement, and partial/full active pursuit. It creates no direct
 `CLAIM_READY` assessment or current-pointer rows.
 
 The evaluation command loads the prediction-free

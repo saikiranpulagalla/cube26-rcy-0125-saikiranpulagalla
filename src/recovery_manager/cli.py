@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 from pathlib import Path
 from time import sleep
 from uuid import UUID
@@ -19,6 +18,7 @@ from recovery_manager.db import (
     make_session_factory,
     set_local_tenant,
 )
+from recovery_manager.demo import run_demo
 from recovery_manager.engine_benchmark import RecoveryEngineBenchmarkAdapter
 from recovery_manager.evaluation import EvaluationCase, load_engine_benchmark, metrics, write_report
 from recovery_manager.fixtures import load_known_fixture
@@ -27,6 +27,12 @@ from recovery_manager.models import RawEnvelope, WorkIntent
 from recovery_manager.worker import PollingWorker
 
 app = typer.Typer(help="Recovery Manager deterministic synthetic mechanics.")
+
+
+def _format_demo_money(currency: str | None, minor: int | None) -> str:
+    if currency is None or minor is None:
+        return "N/A"
+    return f"{currency} {minor // 100}.{minor % 100:02d}"
 
 
 def _dependencies() -> tuple[Settings, sessionmaker[Session]]:
@@ -199,24 +205,47 @@ def evaluate(
 
 @app.command()
 def demo() -> None:
-    """Run the bounded, real-path synthetic demo against an isolated test database.
-
-    This command deliberately delegates fixture setup to the integration harness: it
-    uses the worker assessment, guarded publication, export, and freshness paths and
-    never inserts a ready assessment or current pointer itself.
-    """
-    selected = [
-        "tests/integration/test_assessment_gate_postgres.py::test_worker_constructor_publishes_trusted_synthetic_two_dollar_control",
-        "tests/integration/test_assessment_gate_postgres.py::test_explicitly_reconciled_allocations_drive_residual_outcomes",
-        "tests/integration/test_assessment_gate_postgres.py::test_synthetic_readiness_requires_exact_required_evidence_premise",
-        "tests/integration/test_assessment_gate_postgres.py::test_unknown_reconciliation_in_either_operand_cannot_be_treated_as_zero",
-        "tests/integration/test_assessment_gate_postgres.py::test_export_consumes_real_worker_published_synthetic_assessment",
-        "tests/integration/test_assessment_transactions_postgres.py::test_export_rejects_stale_assessment_after_decisive_revision",
-    ]
-    result = subprocess.run([sys.executable, "-m", "pytest", "-q", *selected], check=False)
-    if result.returncode:
-        raise typer.Exit(code=result.returncode)
-    typer.echo("Case: positive-synthetic — SYNTHETIC_CLAIM_READY USD 2.00; exportable")
-    typer.echo("Case: partial/full settlement and already-pursued — residual or non-claim outcome")
-    typer.echo("Case: evidence-failure and reconciliation-unknown — REVIEW")
-    typer.echo("Case: stale-assessment — historical assessment is non-exportable")
+    """Run inspectable real-engine scenarios against an explicitly isolated database."""
+    settings = get_settings()
+    settings.principals()  # Invalid development configuration is an execution failure, never REVIEW.
+    assert_benchmark_ready(settings)
+    _, runtime = _dependencies()
+    _, worker = _worker_dependencies()
+    for scenario, execution in run_demo(runtime, worker, settings):
+        prediction = execution.prediction
+        ledger = execution.snapshot.get("ledger")
+        review_context = ""
+        if prediction.predicted_recommendation == "REVIEW":
+            reconciliation = execution.snapshot.get("reconciliation")
+            policy = execution.snapshot.get("policy")
+            if policy is None:
+                review_context = " review_context=policy unavailable"
+            elif isinstance(reconciliation, dict) and any(
+                item.get("state") == "UNKNOWN" for item in reconciliation.values() if isinstance(item, dict)
+            ):
+                review_context = " review_context=reconciliation unknown"
+            else:
+                review_context = " review_context=evidence or prerequisite incomplete"
+        typer.echo(
+            "Scenario: {name}\nAssessment: {assessment}\nRecommendation: {recommendation}\n"
+            "Basis: {basis}\nResidual claim: {amount}\nCurrent status: {current_state}\n"
+            "Export eligible: {export_eligible}\n"
+            "Logical opportunity: {opportunity}\nPersisted opportunity: {persisted_opportunity}\n"
+            "Logical obligation: {obligation}\nPersisted obligation: {persisted_obligation}\n"
+            "Evidence: {evidence}\nLedger: {ledger}{review_context}\n".format(
+                name=scenario.name,
+                assessment=execution.assessment_id,
+                recommendation=prediction.predicted_recommendation,
+                basis=prediction.predicted_basis,
+                amount=_format_demo_money(prediction.predicted_currency, prediction.predicted_amount_minor),
+                current_state=execution.current_state,
+                export_eligible="YES" if prediction.predicted_recommendation == "SYNTHETIC_CLAIM_READY" and execution.current_state == "CURRENT" else "NO",
+                opportunity=prediction.predicted_opportunity_id,
+                persisted_opportunity=execution.persisted_opportunity_id,
+                obligation=prediction.predicted_obligation_id,
+                persisted_obligation=execution.persisted_obligation_id,
+                evidence=", ".join(sorted(prediction.predicted_evidence)) or "none",
+                ledger=ledger,
+                review_context=review_context,
+            )
+        )

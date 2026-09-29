@@ -141,15 +141,17 @@ def _score(cases: list[EvaluationCase]) -> dict[str, Any]:
     predictions = [case for case in cases if case.predicted_recommendation == READY]
     gold = [case for case in truth.values() if case.expected_recommendation == READY]
     matched: set[str] = set()
-    true_positive: list[EvaluationCase] = []
-    for prediction in sorted(predictions, key=lambda item: item.scenario_id):
+    matched_prediction_indices: set[int] = set()
+    for index, prediction in sorted(
+        enumerate(predictions), key=lambda item: (item[1].scenario_id, item[0])
+    ):
         candidate = truth.get(prediction.predicted_opportunity_id)
         if candidate is not None and candidate.opportunity() not in matched and _strict(prediction, candidate):
             matched.add(candidate.opportunity())
-            true_positive.append(prediction)
+            matched_prediction_indices.add(index)
     false_exposure: Counter[str] = Counter()
-    for prediction in predictions:
-        if prediction not in true_positive:
+    for index, prediction in enumerate(predictions):
+        if index not in matched_prediction_indices:
             false_exposure[prediction.predicted_currency or "UNSPECIFIED"] += max(prediction.predicted_amount_minor or 0, 0)
     predicted_edges = [edge for case in predictions for edge in case.predicted_evidence]
     relevant_edges = sum(edge in case.required_evidence for case in predictions for edge in case.predicted_evidence)
@@ -157,10 +159,10 @@ def _score(cases: list[EvaluationCase]) -> dict[str, Any]:
     return {
         "cases": total,
         "claims_recommended": len(predictions),
-        "strict_true_positives": len(true_positive),
-        "strict_claim_precision": None if not predictions else len(true_positive) / len(predictions),
-        "strict_claim_recall": None if not gold else len(true_positive) / len(gold),
-        "exact_amount_accuracy": None if not predictions else len(true_positive) / len(predictions),
+        "strict_true_positives": len(matched_prediction_indices),
+        "strict_claim_precision": None if not predictions else len(matched_prediction_indices) / len(predictions),
+        "strict_claim_recall": None if not gold else len(matched_prediction_indices) / len(gold),
+        "exact_amount_accuracy": None if not predictions else len(matched_prediction_indices) / len(predictions),
         "evidence_attribution_precision": None if not predicted_edges else relevant_edges / len(predicted_edges),
         "evidence_sufficiency_rate": None if not predictions else sum(case.required_evidence <= case.predicted_evidence for case in predictions) / len(predictions),
         "decision_coverage": None if not total else sum(case.predicted_recommendation in DETERMINATE for case in cases) / total,

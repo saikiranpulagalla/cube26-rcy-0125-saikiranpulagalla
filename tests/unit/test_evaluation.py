@@ -61,6 +61,47 @@ def test_duplicate_predictions_currency_exposure_and_empty_data_are_safe() -> No
     assert metrics([])["decision_coverage"] is None
 
 
+def test_identical_duplicate_claim_occurrence_counts_as_unsupported_exposure() -> None:
+    """A second equal-valued prediction remains an unmatched occurrence."""
+    supported = _case()
+    duplicate = _case()
+    result = metrics([supported, duplicate])
+    assert result["strict_true_positives"] == 1
+    assert result["claims_recommended"] == 2
+    assert result["strict_claim_precision"] == 0.5
+    assert result["false_exposure_minor"] == {"USD": 200}
+
+
+def test_one_to_one_matching_tracks_prediction_occurrences_and_currency_buckets() -> None:
+    second = _case(
+        scenario_id="holdout/second", dependency_group="family-second",
+        expected_opportunity_id="opp-2", predicted_opportunity_id="opp-2",
+        expected_obligation_id="obl-2", predicted_obligation_id="obl-2",
+    )
+    duplicate_usd = _case()
+    duplicate_eur = _case(
+        scenario_id="holdout/eur-duplicate", dependency_group="family-eur-duplicate",
+        predicted_currency="EUR", predicted_evidence=frozenset({"wrong"}),
+    )
+    result = metrics([_case(), second, duplicate_usd, duplicate_eur])
+    assert result["strict_true_positives"] == 2
+    assert result["claims_recommended"] == 4
+    assert result["strict_claim_precision"] == 0.5
+    assert result["false_exposure_minor"] == {"USD": 200, "EUR": 200}
+
+
+def test_two_truths_and_three_matching_predictions_leave_one_unmatched() -> None:
+    second = _case(
+        scenario_id="holdout/second-only", dependency_group="family-second-only",
+        expected_opportunity_id="opp-2", predicted_opportunity_id="opp-2",
+        expected_obligation_id="obl-2", predicted_obligation_id="obl-2",
+    )
+    result = metrics([_case(), second, _case()])
+    assert result["strict_true_positives"] == 2
+    assert result["claims_recommended"] == 3
+    assert result["false_exposure_minor"] == {"USD": 200}
+
+
 def test_dependency_groups_cannot_leak_between_splits() -> None:
     cases = [
         EvaluationCase("dev/a", "shared", "SYNTHETIC_MECHANICS", "REVIEW", None, "REVIEW", None, True, True),

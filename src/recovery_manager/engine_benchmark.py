@@ -24,6 +24,11 @@ from recovery_manager.models import RecoveryAssessment
 class EngineExecution:
     prediction: EvaluationCase
     assessment_id: str
+    org_id: str
+    persisted_opportunity_id: str
+    persisted_obligation_id: str
+    snapshot: dict[str, object]
+    current_state: str
 
 class RecoveryEngineBenchmarkAdapter:
     def __init__(self, runtime: sessionmaker[Session], worker: sessionmaker[Session], settings: Settings):
@@ -90,4 +95,9 @@ class RecoveryEngineBenchmarkAdapter:
                 predicted_evidence=evidence,
             ),
             str(stored.id),
+            org_id,
+            snapshot_opportunity,
+            snapshot_obligation,
+            snapshot,
+            current.state,
         )

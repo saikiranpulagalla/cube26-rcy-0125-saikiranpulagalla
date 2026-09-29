@@ -32,8 +32,6 @@ jobs:
       RECOVERY_DATABASE_URL: postgresql+psycopg://recovery_app:ci-app-password-not-a-secret@localhost:5432/recovery_test
       RECOVERY_MIGRATION_DATABASE_URL: postgresql+psycopg://recovery_owner:ci-owner-password-not-a-secret@localhost:5432/recovery_test
       RECOVERY_WORKER_DATABASE_URL: postgresql+psycopg://recovery_worker:ci-worker-password-not-a-secret@localhost:5432/recovery_test
-      RECOVERY_DEVELOPMENT_MODE: "true"
-      RECOVERY_DEV_CREDENTIALS: '{"alpha-local-token":{"org_id":"org_demo_alpha","actor_id":"operator_alpha","role":"operator"},"bravo-local-token":{"org_id":"org_demo_bravo","actor_id":"operator_bravo","role":"operator"}}'
       RECOVERY_REQUIRE_POSTGRES: "true"
     steps:
       - uses: actions/checkout@v4

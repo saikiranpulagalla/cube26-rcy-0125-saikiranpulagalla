@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
 
 from typer.testing import CliRunner
 
-from recovery_manager.cli import app
+from recovery_manager.cli import app, demo
 from recovery_manager.config import get_settings
 
 
@@ -66,5 +67,23 @@ def test_evaluate_requires_explicit_benchmark_database_before_writing(tmp_path, 
         assert result.exit_code != 0
         assert not (tmp_path / "repair09-results.json").exists()
         assert not (tmp_path / "repair09-results.md").exists()
+    finally:
+        get_settings.cache_clear()
+
+
+def test_demo_is_application_owned_and_requires_isolated_database(monkeypatch) -> None:
+    source = inspect.getsource(demo)
+    assert "pytest" not in source
+    assert "subprocess.run" not in source
+    monkeypatch.setenv("RECOVERY_DEVELOPMENT_MODE", "true")
+    monkeypatch.setenv(
+        "RECOVERY_DEV_CREDENTIALS",
+        json.dumps({"benchmark-token": {"org_id": "benchmark", "actor_id": "runner", "role": "operator"}}),
+    )
+    monkeypatch.setenv("RECOVERY_BENCHMARK_DATABASE", "false")
+    get_settings.cache_clear()
+    try:
+        result = CliRunner().invoke(app, ["demo"])
+        assert result.exit_code != 0
     finally:
         get_settings.cache_clear()

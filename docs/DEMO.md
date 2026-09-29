@@ -6,14 +6,17 @@ Run this against the isolated PostgreSQL test database configured by the project
 python -m recovery_manager demo
 ```
 
-The command executes real worker assessment, guarded publication, export, ledger, evidence,
-reconciliation, and freshness integration cases. It does not insert a claim-ready assessment,
-current pointer, or packet directly.
+The command is application-owned orchestration, not a pytest wrapper. It provisions fresh
+synthetic world state, runs the real worker assessment and guarded publication, reloads the
+persisted immutable assessment, and prints the resulting assessment ID, recommendation, basis,
+logical and persisted identities, evidence, and ledger values. It does not insert a claim-ready
+assessment, current pointer, or packet directly.
 
-It demonstrates a USD 2 trusted-synthetic claim and export, partial/full settlement and
-already-pursued outcomes, evidence and reconciliation REVIEW outcomes, and stale-export
-rejection. The command is intentionally bounded and rerunnable because the integration
-harness uses isolated fixture state.
+It demonstrates a USD 2 trusted-synthetic claim, partial/full settlement, partial/full active
+pursuit, evidence and reconciliation REVIEW outcomes, and policy-unavailable REVIEW. Set
+`RECOVERY_BENCHMARK_DATABASE=true` only after configuring an isolated PostgreSQL database with
+the owner, runtime, and worker URLs all targeting that same database. Preflight rejects any
+other configuration before demo provisioning.
 
 For the locked evaluation report run:
 
