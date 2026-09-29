@@ -2,7 +2,7 @@
 
 Benchmark: `recovery-engine-synthetic-v1`
 Runner mode: `real_engine`
-Engine-benchmarked revision: `6fad2ab078fddfd7a8e4f1df675b18257e4ede5c`
+Engine-benchmarked revision: `26f7e056135d35c03eeda12716bbeb414cc74b40`
 Cases: 4
 Strict claim precision: 1.0
 Decision coverage: 0.25
