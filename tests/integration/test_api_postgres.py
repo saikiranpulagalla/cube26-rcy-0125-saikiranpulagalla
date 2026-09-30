@@ -128,6 +128,7 @@ def test_review_page_uses_pinned_historical_proof_not_later_tenant_state(
     assert response.status_code == 200
     assert "Historical assessment proof" in response.text
     assert "Pinned amount derivation" in response.text
+    assert "Historical ledger contributors" in response.text
     assert "&#x27;justified_entitlement_minor&#x27;: 200" in response.text
     assert "&#x27;justified_entitlement_minor&#x27;: 300" not in response.text
     snapshot = assessment.dependency_snapshot
@@ -135,5 +136,6 @@ def test_review_page_uses_pinned_historical_proof_not_later_tenant_state(
     assert snapshot["evidence"][0]["assertion_id"] in response.text
     assert snapshot["reconciliation"]["SETTLEMENT"]["id"] in response.text
     assert snapshot["reconciliation"]["PURSUIT"]["id"] in response.text
+    assert snapshot["ledger_proof"]["settlement"]["reconciliation"]["id"] in response.text
     assert "PENDING" not in response.text
     assert "Current status" in response.text and "STALE" in response.text

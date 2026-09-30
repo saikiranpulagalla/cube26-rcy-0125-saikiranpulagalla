@@ -21,14 +21,19 @@ from recovery_manager.assessment import (
     reserve_synthetic_packet,
 )
 from recovery_manager.db import set_local_tenant
+from recovery_manager.ledger import LedgerContributorProof
 from recovery_manager.models import (
+    AmountDerivation,
     ClaimPursuit,
     CurrentRecoveryRecommendation,
+    EconomicObligation,
     EvidenceAssertion,
     EvidenceLifecycleEvent,
     PolicySourceVersion,
     PursuitAllocation,
     RecoveryAssessment,
+    SettlementAllocation,
+    SettlementReversal,
     SyntheticPacketReservation,
     TenantState,
 )
@@ -109,6 +114,246 @@ def test_assessment_snapshot_pins_exact_decision_dependencies(
     assert assessment["evidence"][0]["source_record_version_id"]
     assert {"SETTLEMENT", "PURSUIT"} <= set(assessment["reconciliation"])
     assert assessment["ledger"]["remaining_minor"] == 200
+    assert assessment["ledger_proof"]["consistent"] is True
+    assert assessment["ledger_proof"]["settlement"]["contributors"] == []
+    assert assessment["ledger_proof"]["pursuit"]["contributors"] == []
+
+
+def test_assessment_snapshot_pins_decisive_ledger_contributors_and_historical_state(
+    runtime_factory, worker_factory, settings
+) -> None:
+    """Historical ledger proof is self-contained and never follows later mutable rows."""
+    org_id = "org_synthetic_ledger_contributor_snapshot"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(
+            session,
+            settings,
+            org_id=org_id,
+            settlement_reconciliation_state="RECONCILED_COMPLETE",
+            pursuit_reconciliation_state="RECONCILED_COMPLETE",
+        )
+        _add_settlement(session, org_id, obligation_id, 50)
+        _add_settlement(session, org_id, obligation_id, 25)
+        _add_active_pursuit(session, org_id, obligation_id, 10)
+        _add_active_pursuit(session, org_id, obligation_id, 15)
+        pursuit_ids = session.execute(
+            select(ClaimPursuit.id).where(ClaimPursuit.org_id == org_id)
+        ).scalars().all()
+        session.execute(
+            text("UPDATE claim_pursuit SET status = 'EXPORTED' WHERE id = ANY(:ids)"),
+            {"ids": pursuit_ids},
+        )
+        session.execute(
+            text("UPDATE claim_pursuit SET status = 'PENDING' WHERE id = ANY(:ids)"),
+            {"ids": pursuit_ids},
+        )
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(
+            session,
+            org_id,
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
+        assert assessment.conclusion == "SYNTHETIC_CLAIM_READY"
+        assert assessment.recoverable_minor == 100
+        snapshot = assessment.dependency_snapshot
+
+    proof = snapshot["ledger_proof"]
+    settlements = proof["settlement"]["contributors"]
+    pursuits = proof["pursuit"]["contributors"]
+    assert sorted(item["net_minor"] for item in settlements) == [25, 50]
+    assert sum(item["net_minor"] for item in settlements) == proof["settlement"]["net_minor"] == 75
+    assert {item["obligation_id"] for item in settlements} == {str(obligation_id)}
+    assert all(item["credit_event_id"] and item["credit_source_record_version_id"] for item in settlements)
+    assert sorted(item["allocated_minor"] for item in pursuits) == [10, 15]
+    assert sum(item["allocated_minor"] for item in pursuits) == proof["pursuit"]["active_minor"] == 25
+    assert {item["pursuit_state"] for item in pursuits} == {"PENDING"}
+    assert all(item["pursuit_id"] and item["allocation_id"] for item in pursuits)
+    assert proof["settlement"]["reconciliation"]["state"] == "RECONCILED_COMPLETE"
+    assert proof["pursuit"]["reconciliation"]["state"] == "RECONCILED_COMPLETE"
+
+    pursuit_id = UUID(pursuits[0]["pursuit_id"])
+    with runtime_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        session.execute(
+            text("UPDATE claim_pursuit SET status = 'RESOLVED' WHERE id = :id"), {"id": pursuit_id}
+        )
+        _add_settlement(session, org_id, obligation_id, 10)
+    with runtime_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        persisted_snapshot = session.execute(
+            select(RecoveryAssessment.dependency_snapshot).where(RecoveryAssessment.id == assessment.id)
+        ).scalar_one()
+        assert persisted_snapshot == snapshot
+        assert persisted_snapshot["ledger_proof"]["pursuit"]["contributors"][0]["pursuit_state"] == "PENDING"
+        assert session.execute(
+            select(ClaimPursuit.status).where(ClaimPursuit.id == pursuit_id)
+        ).scalar_one() == "RESOLVED"
+        assert session.execute(
+            select(func.count())
+            .select_from(SettlementAllocation)
+            .where(SettlementAllocation.obligation_id == obligation_id)
+        ).scalar_one() == 3
+
+
+def test_ledger_snapshot_excludes_contributors_for_a_different_obligation(
+    runtime_factory, worker_factory, settings
+) -> None:
+    """A same-tenant allocation is still irrelevant unless it names this obligation."""
+    org_id = "org_synthetic_snapshot_wrong_obligation"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(
+            session,
+            settings,
+            org_id=org_id,
+            settlement_reconciliation_state="RECONCILED_COMPLETE",
+            pursuit_reconciliation_state="RECONCILED_COMPLETE",
+        )
+        financial_event_id = session.execute(
+            select(EconomicObligation.financial_event_id).where(EconomicObligation.id == obligation_id)
+        ).scalar_one()
+        other = EconomicObligation(
+            org_id=org_id,
+            economic_key="SYN-FEE-001-other-obligation",
+            financial_event_id=financial_event_id,
+            recovery_basis="OTHER_SUPPORTED",
+            currency="USD",
+            business_instance={},
+            quantity_scope={"coverage": "KNOWN"},
+        )
+        session.add(other)
+        session.flush()
+        session.add(
+            AmountDerivation(
+                org_id=org_id,
+                obligation_id=other.id,
+                derivation_version=1,
+                currency="USD",
+                observed_amount_minor=1000,
+                expected_amount_minor=800,
+                justified_entitlement_minor=200,
+                rounding_rule="integer minor units",
+                basis_class="SYNTHETIC_ONLY",
+                source_basis={},
+            )
+        )
+        session.flush()
+        _add_settlement(session, org_id, other.id, 50)
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(
+            session,
+            org_id,
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
+        assert assessment.conclusion == "SYNTHETIC_CLAIM_READY"
+        assert assessment.recoverable_minor == 200
+        assert assessment.dependency_snapshot["ledger_proof"]["settlement"]["contributors"] == []
+
+
+def test_assessment_snapshot_pins_settlement_reversal_provenance(
+    runtime_factory, worker_factory, settings
+) -> None:
+    org_id = "org_synthetic_snapshot_settlement_reversal"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(
+            session,
+            settings,
+            org_id=org_id,
+            settlement_reconciliation_state="RECONCILED_COMPLETE",
+            pursuit_reconciliation_state="RECONCILED_COMPLETE",
+        )
+        _add_settlement(session, org_id, obligation_id, 100)
+        session.flush()
+        allocation = session.execute(
+            select(SettlementAllocation).where(SettlementAllocation.obligation_id == obligation_id)
+        ).scalar_one()
+        reversal = SettlementReversal(
+            org_id=org_id,
+            allocation_id=allocation.id,
+            reversed_minor=25,
+            reason="historical correction",
+        )
+        session.add(reversal)
+        session.flush()
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(
+            session,
+            org_id,
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
+        contributor = assessment.dependency_snapshot["ledger_proof"]["settlement"]["contributors"][0]
+        assert assessment.recoverable_minor == 125
+        assert contributor["allocated_minor"] == 100
+        assert contributor["reversed_minor"] == 25
+        assert contributor["net_minor"] == 75
+        assert contributor["reversals"] == [
+            {"id": str(reversal.id), "reversed_minor": 25, "reason": "historical correction"}
+        ]
+
+
+def test_cross_tenant_settlement_contributor_is_rejected(runtime_factory, settings) -> None:
+    """Composite tenant foreign keys prevent cross-tenant ledger provenance."""
+    org_a = "org_synthetic_snapshot_cross_tenant_a"
+    org_b = "org_synthetic_snapshot_cross_tenant_b"
+    with runtime_factory() as session, session.begin():
+        obligation_a = _assess_synthetic_candidate(session, settings, org_id=org_a)
+        obligation_b = _assess_synthetic_candidate(session, settings, org_id=org_b)
+        credit_event_b = session.execute(
+            select(EconomicObligation.financial_event_id).where(EconomicObligation.id == obligation_b)
+        ).scalar_one()
+        set_local_tenant(session, org_a)
+        with pytest.raises(DBAPIError):
+            with session.begin_nested():
+                session.add(
+                    SettlementAllocation(
+                        org_id=org_a,
+                        credit_event_id=credit_event_b,
+                        obligation_id=obligation_a,
+                        allocated_minor=1,
+                        rationale="cross-tenant contributor must fail",
+                    )
+                )
+                session.flush()
+
+
+def test_inconsistent_ledger_contributor_proof_cannot_be_claim_ready(
+    runtime_factory, worker_factory, settings, monkeypatch
+) -> None:
+    """A snapshot integrity disagreement is an execution-time REVIEW, never normalization."""
+    org_id = "org_synthetic_snapshot_inconsistent_proof"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(session, settings, org_id=org_id)
+    monkeypatch.setattr(
+        "recovery_manager.assessment.ledger_contributor_proof",
+        lambda *args, **kwargs: LedgerContributorProof(
+            settlement={"net_minor": 75, "contributors": []},
+            pursuit={"active_minor": 0, "contributors": []},
+            consistent=False,
+        ),
+    )
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(
+            session,
+            org_id,
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
+    assert assessment.conclusion == "REVIEW"
+    assert assessment.recoverable_minor is None
 
 
 def test_export_rejects_pinned_policy_revoked_after_publication(
@@ -317,6 +562,159 @@ def test_ledger_change_racing_publication_leaves_old_result_stale(
         assert current_assessment(session, org_id, obligation_id).state == "STALE"  # type: ignore[union-attr]
         with pytest.raises(ValueError, match="not current synthetic claim-ready"):
             reserve_synthetic_packet(session, org_id, assessment_id, f"publication-{change}-race")
+
+
+@pytest.mark.parametrize("change", ("settlement", "pursuit"))
+def test_ledger_change_first_blocks_publication_until_new_residual_is_assessed(
+    runtime_factory, worker_factory, settings, change: str
+) -> None:
+    """The complementary schedule cannot publish the pre-mutation USD 2.00 residual."""
+    org_id = f"org_synthetic_{change}_first_publication_race"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(
+            session,
+            settings,
+            org_id=org_id,
+            settlement_reconciliation_state="RECONCILED_COMPLETE",
+            pursuit_reconciliation_state="RECONCILED_COMPLETE",
+        )
+    barrier = Barrier(2)
+
+    def mutate_first() -> None:
+        with runtime_factory() as session, session.begin():
+            set_local_tenant(session, org_id)
+            session.execute(text("SET LOCAL lock_timeout = '3s'"))
+            session.execute(text("SET LOCAL statement_timeout = '10s'"))
+            session.execute(text("SELECT public.lock_current_tenant_revision()"))
+            barrier.wait(timeout=5)
+            if change == "settlement":
+                _add_settlement(session, org_id, obligation_id, 100)
+            else:
+                _add_active_pursuit(session, org_id, obligation_id, 100)
+
+    def publish_second() -> UUID:
+        with worker_factory() as session, session.begin():
+            set_local_tenant(session, org_id)
+            session.execute(text("SET LOCAL lock_timeout = '3s'"))
+            session.execute(text("SET LOCAL statement_timeout = '10s'"))
+            barrier.wait(timeout=5)
+            assessment = assess_synthetic(
+                session,
+                org_id,
+                obligation_id,
+                "SYN-FEE-001",
+                "synthetic-invalid-fee",
+                synthetic_capability_enabled=True,
+            )
+            assert assessment.conclusion == "SYNTHETIC_CLAIM_READY"
+            assert assessment.recoverable_minor == 100
+            return assessment.id
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        mutation = executor.submit(mutate_first)
+        publication = executor.submit(publish_second)
+        mutation.result(timeout=10)
+        assessment_id = publication.result(timeout=10)
+    with runtime_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        current = current_assessment(session, org_id, obligation_id)
+        assert current is not None and current.assessment.id == assessment_id
+        assert current.assessment.recoverable_minor == 100
+
+
+def test_policy_revocation_first_blocks_publication_of_claim_ready_assessment(
+    runtime_factory, worker_factory, settings
+) -> None:
+    """A policy mutation holding the decisive lock forces the later publisher to REVIEW."""
+    from sqlalchemy import create_engine, update
+    from sqlalchemy.orm import sessionmaker
+
+    org_id = "org_synthetic_policy_first_publication_race"
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(session, settings, org_id=org_id)
+    barrier = Barrier(2)
+
+    def revoke_first() -> None:
+        owner_factory = sessionmaker(
+            bind=create_engine(settings.migration_database_url, future=True), future=True
+        )
+        with owner_factory() as session, session.begin():
+            set_local_tenant(session, org_id)
+            session.execute(text("SET LOCAL lock_timeout = '3s'"))
+            session.execute(text("SET LOCAL statement_timeout = '10s'"))
+            session.execute(text("SELECT public.lock_current_tenant_revision()"))
+            barrier.wait(timeout=5)
+            session.execute(
+                update(PolicySourceVersion)
+                .where(PolicySourceVersion.org_id == org_id)
+                .values(lifecycle_state="REVOKED")
+            )
+
+    def publish_second() -> str:
+        with worker_factory() as session, session.begin():
+            set_local_tenant(session, org_id)
+            session.execute(text("SET LOCAL lock_timeout = '3s'"))
+            session.execute(text("SET LOCAL statement_timeout = '10s'"))
+            barrier.wait(timeout=5)
+            return assess_synthetic(
+                session,
+                org_id,
+                obligation_id,
+                "SYN-FEE-001",
+                "synthetic-invalid-fee",
+                synthetic_capability_enabled=True,
+            ).conclusion
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        revocation = executor.submit(revoke_first)
+        publication = executor.submit(publish_second)
+        revocation.result(timeout=10)
+        assert publication.result(timeout=10) == "REVIEW"
+
+
+def test_policy_revocation_first_rejects_later_export(runtime_factory, worker_factory, settings) -> None:
+    """The complementary invalidation-first schedule cannot reserve a stale packet."""
+    from sqlalchemy import create_engine, update
+    from sqlalchemy.orm import sessionmaker
+
+    org_id = "org_synthetic_policy_first_export_race"
+    assessment_id, _ = _ready_assessment(runtime_factory, worker_factory, settings, org_id, "policy-first")
+    barrier = Barrier(2)
+
+    def revoke_first() -> None:
+        owner_factory = sessionmaker(
+            bind=create_engine(settings.migration_database_url, future=True), future=True
+        )
+        with owner_factory() as session, session.begin():
+            set_local_tenant(session, org_id)
+            session.execute(text("SET LOCAL lock_timeout = '3s'"))
+            session.execute(text("SET LOCAL statement_timeout = '10s'"))
+            session.execute(text("SELECT public.lock_current_tenant_revision()"))
+            barrier.wait(timeout=5)
+            session.execute(
+                update(PolicySourceVersion)
+                .where(PolicySourceVersion.org_id == org_id)
+                .values(lifecycle_state="REVOKED")
+            )
+
+    def export_second() -> str:
+        with runtime_factory() as session, session.begin():
+            set_local_tenant(session, org_id)
+            session.execute(text("SET LOCAL lock_timeout = '3s'"))
+            session.execute(text("SET LOCAL statement_timeout = '10s'"))
+            barrier.wait(timeout=5)
+            with pytest.raises(ValueError, match="not current synthetic claim-ready"):
+                reserve_synthetic_packet(session, org_id, assessment_id, "policy-first-export")
+            return "rejected"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        revocation = executor.submit(revoke_first)
+        export = executor.submit(export_second)
+        revocation.result(timeout=10)
+        assert export.result(timeout=10) == "rejected"
+    with runtime_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assert session.execute(select(func.count()).select_from(SyntheticPacketReservation)).scalar_one() == 0
 
 
 def test_policy_revocation_racing_export_commits_only_historical_valid_packet(

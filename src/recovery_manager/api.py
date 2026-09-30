@@ -36,6 +36,16 @@ from recovery_manager.models import (
 )
 
 
+def _historical_ledger_proof_text(snapshot: dict[str, object]) -> str:
+    """Never reconstruct a legacy assessment's ledger proof from current rows."""
+    ledger_proof = snapshot.get("ledger_proof")
+    return (
+        "legacy snapshot — contributor-level ledger provenance unavailable"
+        if not isinstance(ledger_proof, dict)
+        else str(ledger_proof)
+    )
+
+
 def create_app(
     settings: Settings | None = None, factory: sessionmaker[Session] | None = None
 ) -> FastAPI:
@@ -249,6 +259,7 @@ def create_app(
         policy_text = "historical dependency unavailable" if not policy else str(policy)
         evidence_text = "historical dependency unavailable" if not evidence else str(evidence)
         reconciliation_text = "historical dependency unavailable" if not reconciliation else str(reconciliation)
+        ledger_proof_text = _historical_ledger_proof_text(snapshot)
         capability = (
             "Synthetic mechanics only; not operational policy validation."
             if authority
@@ -265,7 +276,8 @@ def create_app(
 <dt>Pinned amount derivation</dt><dd>{escape(derivation_text)}</dd>
 <dt>Pinned policy</dt><dd>{escape(policy_text)}</dd>
 <dt>Pinned evidence</dt><dd>{escape(evidence_text)}</dd>
-<dt>Pinned reconciliation</dt><dd>{escape(reconciliation_text)}</dd></dl></section>
+<dt>Pinned reconciliation</dt><dd>{escape(reconciliation_text)}</dd>
+<dt>Historical ledger contributors</dt><dd>{escape(ledger_proof_text)}</dd></dl></section>
 <section><h2>Current status</h2><dl><dt>Actionability</dt><dd>{escape(current_text)}</dd>
 <dt>Relevant pursuit states</dt><dd>{escape(', '.join(pursuits) or 'none')}</dd>
 <dt>Relevant settlements</dt><dd>{escape(', '.join(str(item) for item in settlements) or 'none')}</dd>

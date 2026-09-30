@@ -12,7 +12,12 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from recovery_manager.evidence import discover_assertions, prove_assertion
-from recovery_manager.ledger import Residual, residual_for_obligation
+from recovery_manager.ledger import (
+    LedgerContributorProof,
+    Residual,
+    ledger_contributor_proof,
+    residual_for_obligation,
+)
 from recovery_manager.models import (
     AmountDerivation,
     ClaimPursuit,
@@ -261,6 +266,24 @@ def assess_synthetic(
         reconciliation.get("PURSUIT", (None, "UNKNOWN", None, ""))[1] == "RECONCILED_NONE"
         and residual.active_pursuit_minor != 0
     )
+    reconciliation_snapshot = {
+        domain: {
+            "id": str(reconciliation_id),
+            "state": state,
+            "cutoff": cutoff.isoformat() if cutoff else None,
+            "source_set_sha256": source_set_sha256,
+        }
+        for domain, (reconciliation_id, state, cutoff, source_set_sha256) in reconciliation.items()
+    }
+    ledger_proof: LedgerContributorProof = ledger_contributor_proof(
+        session,
+        org_id,
+        obligation_id,
+        residual.currency,
+        expected_settlement_minor=residual.allocated_settlement_minor,
+        expected_active_pursuit_minor=residual.active_pursuit_minor,
+        reconciliation=reconciliation_snapshot,
+    )
     source_basis = derivation.source_basis if derivation is not None else {}
     fixture_profile = source_basis.get("fixture_profile")
     fixture_sha256 = source_basis.get("fixture_sha256")
@@ -309,6 +332,7 @@ def assess_synthetic(
         and residual.remaining_minor is not None
         and reconciliation_complete
         and reconciliation_consistent
+        and ledger_proof.consistent
         and found.complete
         and not found.conflict_present
         and policy_applies
@@ -394,21 +418,18 @@ def assess_synthetic(
             }
             for assertion in found.assertions
         ],
-        "reconciliation": {
-            domain: {
-                "id": str(reconciliation_id),
-                "state": state,
-                "cutoff": cutoff.isoformat() if cutoff else None,
-                "source_set_sha256": source_set_sha256,
-            }
-            for domain, (reconciliation_id, state, cutoff, source_set_sha256) in reconciliation.items()
-        },
+        "reconciliation": reconciliation_snapshot,
         "ledger": {
             "justified_entitlement_minor": residual.justified_entitlement_minor,
             "allocated_settlement_minor": residual.allocated_settlement_minor,
             "active_pursuit_minor": residual.active_pursuit_minor,
             "remaining_minor": residual.remaining_minor,
             "currency": residual.currency,
+        },
+        "ledger_proof": {
+            "settlement": ledger_proof.settlement,
+            "pursuit": ledger_proof.pursuit,
+            "consistent": ledger_proof.consistent,
         },
         "retrieval_complete": found.complete,
     }

@@ -318,11 +318,12 @@ def test_unknown_reconciliation_in_either_operand_cannot_be_treated_as_zero(
 
 
 def _add_settlement(session, org_id: str, obligation_id, amount_minor: int) -> None:
+    fixture_key = f"settlement-{obligation_id}-{uuid4().hex}"
     source = SourceRecordVersion(
         org_id=org_id,
         source_kind="synthetic-settlement",
-        source_record_id=f"settlement-{obligation_id}",
-        content_sha256=hashlib.sha256(f"settlement-{obligation_id}".encode()).hexdigest(),
+        source_record_id=fixture_key,
+        content_sha256=hashlib.sha256(fixture_key.encode()).hexdigest(),
         declared_org_id=org_id,
         payload={"credit": {"amount_minor": amount_minor}},
     )
