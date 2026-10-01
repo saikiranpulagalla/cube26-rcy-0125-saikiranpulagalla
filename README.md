@@ -1,99 +1,175 @@
-# Cube Buildathon · 05 · Recovery Manager
+# Recovery Manager
 
-**Commerce Context stream · Round 2 · Individual Build**
+Recovery Manager is a deterministic, evidence-driven financial recovery engine that identifies justified recoverable value and refuses to recommend a claim when evidence, reconciliation, authority, or current economic state is uncertain.
 
-> Five agents, one unit, one record that follows it.
-> A physical product arrives, gets prepped, gets shipped, comes back. At every step a person makes a fast judgment that nobody records. **You build the agent that makes one of those judgments, and leaves proof.**
+Finding money that appears missing is easy. Proving that it is still recoverable, for the right obligation, without duplicating settlement or an active pursuit, is the hard part. Recovery Manager models that proof as a PostgreSQL-backed decision workflow with explicit evidence, authority, reconciliation, and historical provenance.
 
-**New here? Read these first:**
+**Fast paths:** [Run the demo](#run-the-demo) · [Run the benchmark](#run-the-benchmark) · [Quickstart](#quickstart) · [Architecture](ARCHITECTURE.md)
 
-1. [`GITHUB-GUIDE.md`](GITHUB-GUIDE.md) explains how to fork the repository, set it up, build and push your work.
-2. [`RULES.md`](RULES.md) covers the repository and engineering rules.
+> **Scope:** this project demonstrates synthetic recovery mechanics. It does not claim official Amazon policy accuracy, reimbursement eligibility, live filing, or guaranteed reimbursement.
 
----
+## Why this matters
 
-## Your problem statement: Recovery Manager
+A charge can look wrong while still being impossible to recover safely. A naive recovery tool can double-claim money that was settled, claim value already under active pursuit, turn an unknown reconciliation result into zero, or treat a missing evidence record as proof.
 
-|                              |                                                          |
-| ---------------------------- | -------------------------------------------------------- |
-| **Position in the chain**    | Step 5 of 5. Money back. This step has no camera.        |
-| **Customer**                 | Anyone being charged fees they do not owe                |
-| **What gets recorded**       | Claim filed                                              |
-| **Who consumes your output** | The seller, and whoever reviews the claim at the channel |
+Recovery Manager is built around the difference between **an apparent discrepancy** and **a justified, currently actionable recovery**. It produces an actionable recommendation only when the decisive inputs are known and valid. Otherwise, it keeps the case in `REVIEW`.
 
-Amazon charges inbound defect fees, loses units, damages inventory and mis-weighs parcels. Sellers are owed reimbursements they never claim, and charged fees they cannot contest, because contesting requires evidence and they have none. Today this is done by hand, by agencies taking a percentage, or not at all.
+## See it work
 
-**This is not a vision agent.** No camera, no capture surface. It reads the evidence records the other four Managers produce, matches them against channel fee and reimbursement reports, and assembles a claim.
+After the isolated PostgreSQL setup in [Quickstart](#quickstart), run:
 
-* Ingest a fee or reimbursement report and parse the charges
-* Match each charge to the unit evidence covering it
-* Decide whether the evidence contradicts the charge, supports it, or is insufficient
-* Assemble a disputable claim with evidence attached and a dollar figure
-* State explicitly what it cannot claim, and why
+~~~bash
+python -m recovery_manager demo
+~~~
 
-> **Build against the official evidence contract.** Recovery depends on the evidence produced by the other four Managers. For Round 2, use the evidence contract provided by the organisers as the baseline rather than creating a separate cross-pod contract.
+The application-owned demo provisions fresh synthetic state, runs the real worker path, persists assessments, and prints the resulting assessment IDs. It is not a pytest wrapper.
 
-> **Your eval is different.** Others measure a model against human labels on units. You measure claim correctness on charges, and you report precision, because a wrongly filed claim costs a seller standing with the channel while a missed one costs only money.
+| Scenario | Actual result |
+|---|---|
+| Supported synthetic recovery | `SYNTHETIC_CLAIM_READY` — USD 2.00 |
+| Evidence insufficient | `REVIEW` |
+| Reconciliation unknown | `REVIEW` |
+| Policy unavailable | `REVIEW` |
+| Partial settlement | `SYNTHETIC_CLAIM_READY` — USD 1.00 |
+| Fully settled | `RESOLVED` |
+| Partial active pursuit | `SYNTHETIC_CLAIM_READY` — USD 1.00 |
+| Fully pursued | `ALREADY_PURSUED` |
 
-### The chain you are part of
+## What makes it different
 
-```text
- Supplier delivery      Inbound to Amazon     Outbound to buyer     Customer return        Money back
- ┌──────────────┐      ┌──────────────┐      ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
- │ 01 Receiving │ ───▶ │ 02 Prep      │ ───▶ │ 03 Pack      │ ───▶ │ 04 Returns   │      │ 05 Recovery  │
- │ condition on │      │ compliance   │      │ contents at  │      │ condition &  │      │ reads all    │
- │ arrival      │      │ proof        │      │ seal         │      │ disposition  │      │ four → claim │
- └──────┬───────┘      └──────┬───────┘      └──────┬───────┘      └──────┬───────┘      └──────▲───────┘
-        └─────────────────────┴─────────────────────┴─────────────────────┴─────────────────────┘
-```
+- **Evidence-first decisions.** A recommendation requires mechanically supported, current evidence; an identifier alone is not proof.
+- **Unknown is a real state.** Missing settlement or pursuit reconciliation does not become zero.
+- **Economic conservation.** Linked settlement and active pursuit allocations reduce the amount that can remain actionable.
+- **Exact financial identity.** Similar amounts or subjects do not make two obligations interchangeable.
+- **Historical proof and current actionability are separate.** An old assessment retains its decision-time basis, while later changes can make it stale for current action.
+- **Guarded publication.** A worker cannot simply publish an arbitrary current result; decisive state is rechecked at the publication boundary.
+- **Real-engine evaluation.** The benchmark provisions isolated PostgreSQL state and reloads persisted assessments rather than replaying expected answers.
 
-The first four are the same machine: a camera, a model, and a decision bound to a record. What changes is the ruleset, the buyer and the moment. The fifth has no camera. It turns the other four's records into a claim.
+## How a decision works
 
-Your output has to be usable by another pod. That's deliberate, and it's scored.
+~~~mermaid
+flowchart TD
+    A[Financial source record] --> B[Canonical event and obligation]
+    B --> C[Evidence and authority checks]
+    C --> D[Settlement reconciliation]
+    D --> E[Active-pursuit reconciliation]
+    E --> F[Entitlement and residual calculation]
+    F --> G{Decision}
+    G -->|supported and current| H[SYNTHETIC_CLAIM_READY]
+    G -->|fully settled| I[RESOLVED]
+    G -->|fully pursued| J[ALREADY_PURSUED]
+    G -->|unknown or unsupported| K[REVIEW]
+    H --> L[Guarded publication]
+    I --> L
+    J --> L
+    K --> L
+    L --> M[Historical assessment snapshot / synthetic export boundary]
+~~~
 
----
+The residual model is intentionally small and explicit:
 
-## Reference data
+~~~text
+E = justified gross entitlement
+C = net linked settlement
+U = E - C
+A = active pursuit allocation
+R = U - A
+~~~
 
-`data/` holds a **dummy** CSV for reference while you design and build. Its columns and meanings are listed in [`data/README.md`](data/README.md).
+| Symbol | Meaning |
+|---|---|
+| `E` | justified gross entitlement |
+| `C` | net linked settlement |
+| `U` | unresolved entitlement |
+| `A` | value already under active pursuit |
+| `R` | remaining actionable residual |
 
-**The data is synthetic.** The SKUs, ASINs, FNSKUs, orders, suppliers, operators and amounts are all invented. The requirement flags and fee amounts are **not** Amazon's real rules or fees. Engineering rule 5 applies: look the authoritative rule up. The `photo_refs` paths are placeholders, and no images ship with this repo. Your fixtures and eval set are yours to capture.
+For example, USD 2.00 of justified entitlement, USD 0.50 already settled, and USD 0.50 already under active pursuit leaves USD 1.00. Arithmetic alone never authorizes a claim: evidence, authority, reconciliation completeness, and currentness must also permit action.
 
-All five buildathon repos share the same `unit_id` values (`UNIT-0001` … `UNIT-0100`). You can follow one unit from receiving through recovery, the same way the real records will be joined. In the sample, each unit takes one route: **FBA** (prep, then Amazon ships it and charges fees) or **merchant-fulfilled / 3PL** (the seller packs it). So a unit has a Prep record or a Pack record, never both.
+## Safety model
 
-Recovery also gets `data/upstream/`, a copy of the other four files, so you can practise the join before Round 3 integration.
+| Principle | Enforced behavior |
+|---|---|
+| Unknown ≠ zero | Unknown reconciliation produces `REVIEW`; an empty query is not treated as a known zero. |
+| Missing evidence ≠ proof | Evidence assertions prove an exact source/version/subject/value proposition. |
+| Historical ready ≠ currently actionable | Revision and freshness checks can invalidate an old current assessment without rewriting its history. |
+| One entitlement cannot be recovered twice | Linked settlement and active-pursuit allocations reduce the residual. |
+| Infrastructure failure ≠ `REVIEW` | Invalid configuration, preflight failure, or unavailable database makes the command fail. |
+| Ground truth cannot control the engine | Benchmark truth is scored after real engine execution; it is not passed into provisioning or assessment. |
 
-## Quickstart and bounded demo
+The authoritative monetary boundary is deterministic and evidence-constrained. This repository does not use an LLM or other model to determine financial entitlement. AI assistance, if added around the workflow, must not override this safety boundary.
 
-Recovery Manager uses Python 3.12 and PostgreSQL 16. The demo, evaluation, migrations, and
-required PostgreSQL tests must use one **isolated** database with the separate
-`recovery_owner`, `recovery_app`, and `recovery_worker` roles. The examples below use
-`recovery_test`, which satisfies the destructive-test safety guard; do not point them at a
-development or production database. The example host and port are placeholders, not required
-machine-specific values.
+## Architecture and trust boundaries
 
-First copy `.env.example` to an uncommitted `.env`, replace its password placeholders, install
-the project, and start the loopback-only service. Docker Compose reads `.env` for bootstrap
-passwords, but Alembic and the Python commands below read **exported shell variables**; merely
-creating `.env` does not configure those commands.
+The application accepts source data, builds tenant-scoped canonical and economic records, evaluates evidence and synthetic authority, reconciles linked ledger state, and persists an assessment. PostgreSQL is the data and security boundary.
 
-```bash
+| Role | Responsibility |
+|---|---|
+| `recovery_app` | Normal tenant-scoped runtime operations. |
+| `recovery_worker` | Deterministic assessment execution and guarded publication. |
+| `recovery_owner` | Schema, migration, and security-sensitive setup operations. |
+
+Protected tables use PostgreSQL row-level security with tenant context. The runtime verifies that its principal is not a superuser, RLS bypass role, or protected-table owner. See [ARCHITECTURE.md](ARCHITECTURE.md) for components, data flow, model usage, publication/currentness, and historical provenance.
+
+## Historical provenance
+
+An immutable assessment snapshot preserves the decision-time dependencies used to reach its result: applicable policy/version, evidence, reconciliation state and cutoffs, settlement contributors, pursuit allocations, and pursuit state at assessment time. Later ledger or policy changes do not rewrite that historical proof.
+
+Historical proof is deliberately distinct from current status. An assessment can accurately describe what was supported when created while no longer being safe to publish or export now.
+
+## Evaluation
+
+The authoritative benchmark is defined in [`data/evaluation/recovery-engine-benchmark.json`](data/evaluation/recovery-engine-benchmark.json). It is prediction-free: setup data provisions isolated PostgreSQL state; the real engine creates and persists an assessment; the adapter reloads that assessment and reconstructs the prediction from the persisted snapshot. Ground truth is used only for evaluation.
+
+The evaluator uses strict opportunity, obligation, basis, amount, currency, and evidence identity matching. It matches prediction occurrences one-to-one, so an equal-valued duplicate claim remains unsupported exposure. Unsupported exposure is also bucketed by currency.
+
+| Metric | Result |
+|---|---:|
+| Strict claim precision | `1.0` |
+| Decision coverage | `0.25` |
+| Unsupported exposure | `{}` |
+| Runner mode | `real_engine` |
+| Engine-benchmarked revision | `8ff4e1598fdbfc43405726dac909afd09091fc9a` |
+
+The four benchmark cases include one supported synthetic claim and three conservative `REVIEW` outcomes for insufficient evidence, unknown reconciliation, and unavailable policy. Decision coverage is deliberately conservative: `REVIEW` is not converted into a successful claim to increase a metric. These results validate the synthetic mechanics represented in this repository; they are not an operational Amazon-policy accuracy claim.
+
+Read the committed [JSON result](artifacts/evaluation/repair09-results.json) and [Markdown report](artifacts/evaluation/repair09-results.md) for case-level provenance and limitations.
+
+## Technical highlights
+
+- PostgreSQL RLS, forced tenant scoping, and separate runtime, worker, and owner roles.
+- Canonical event and obligation identities that prevent same-subject or same-amount confusion.
+- Exact, recursive JSON-type-aware evidence comparison: booleans and numbers do not collapse into one another.
+- Explicit reconciliation completeness, including settlement reversals and active-pursuit state.
+- Immutable decision-time ledger proof with contributor identities and decision-time pursuit state.
+- Bounded concurrent publication/invalidation schedules that protect against stale current results.
+- Isolated benchmark preflight that verifies designation, endpoint equality, roles, migration version, and bounded database timeouts.
+- Strict evaluator validation for truth conflicts, claim money, currency shape, and one-to-one matching.
+
+## Quickstart
+
+Recovery Manager requires **Python 3.12** and **PostgreSQL 16**. Use a dedicated database for demo, evaluation, and required PostgreSQL tests. The examples use `recovery_test`, which satisfies the test harness safety guard; never point these commands at a development or production database.
+
+1. Copy `.env.example` to an uncommitted `.env` and replace password placeholders.
+2. Install dependencies and start PostgreSQL:
+
+~~~bash
 python -m pip install -e ".[dev]"
 docker compose up -d postgres
-```
+~~~
 
-Create a separate test database once, using the local bootstrap administrator. This grants the
-least privileges needed by the isolated roles to migrate and run tests.
+3. Create the isolated database once, using the local bootstrap administrator:
 
-```bash
+~~~bash
 docker compose exec -T postgres psql -U recovery_admin -d recovery -c "CREATE DATABASE recovery_test"
 docker compose exec -T postgres psql -U recovery_admin -d recovery_test -c "GRANT CONNECT ON DATABASE recovery_test TO recovery_owner, recovery_app, recovery_worker; GRANT USAGE, CREATE ON SCHEMA public TO recovery_owner; GRANT USAGE ON SCHEMA public TO recovery_app, recovery_worker"
-```
+~~~
 
-Set these variables in the same shell that will run Alembic, tests, demo, or evaluation. Replace
-the password placeholders and host/port as appropriate for your isolated instance.
+Docker Compose and application settings can read `.env`. Alembic and the explicit test configuration read exported shell variables, so export the following in the same shell used for migrations, tests, demo, or evaluation. Replace password, host, and port placeholders with your isolated instance. Percent-encode reserved characters in URL passwords.
 
-```powershell
+**PowerShell**
+
+~~~powershell
 $env:RECOVERY_DATABASE_URL = 'postgresql+psycopg://recovery_app:<app-password>@localhost:<port>/recovery_test'
 $env:RECOVERY_MIGRATION_DATABASE_URL = 'postgresql+psycopg://recovery_owner:<owner-password>@localhost:<port>/recovery_test'
 $env:RECOVERY_WORKER_DATABASE_URL = 'postgresql+psycopg://recovery_worker:<worker-password>@localhost:<port>/recovery_test'
@@ -103,9 +179,11 @@ $env:RECOVERY_REQUIRE_POSTGRES = 'true'
 $env:RECOVERY_BENCHMARK_DATABASE = 'true'
 $env:RECOVERY_DEVELOPMENT_MODE = 'true'
 $env:RECOVERY_DEV_CREDENTIALS = '{"local-token":{"org_id":"demo_org","actor_id":"demo_operator","role":"operator"}}'
-```
+~~~
 
-```bash
+**POSIX shell**
+
+~~~bash
 export RECOVERY_DATABASE_URL='postgresql+psycopg://recovery_app:<app-password>@localhost:<port>/recovery_test'
 export RECOVERY_MIGRATION_DATABASE_URL='postgresql+psycopg://recovery_owner:<owner-password>@localhost:<port>/recovery_test'
 export RECOVERY_WORKER_DATABASE_URL='postgresql+psycopg://recovery_worker:<worker-password>@localhost:<port>/recovery_test'
@@ -115,299 +193,63 @@ export RECOVERY_REQUIRE_POSTGRES=true
 export RECOVERY_BENCHMARK_DATABASE=true
 export RECOVERY_DEVELOPMENT_MODE=true
 export RECOVERY_DEV_CREDENTIALS='{"local-token":{"org_id":"demo_org","actor_id":"demo_operator","role":"operator"}}'
-```
+~~~
 
-Run migrations with the owner URL, then execute the required PostgreSQL suite, the application-owned
-demo, and the authoritative evaluation:
+### Run migrations
 
-```bash
+~~~bash
 alembic upgrade head
-python -m pytest tests -q
+~~~
+
+### Run the demo
+
+~~~bash
 python -m recovery_manager demo
+~~~
+
+The command requires the explicit isolated benchmark designation and prints actual persisted assessment IDs and decision details.
+
+### Run the benchmark
+
+~~~bash
 python -m recovery_manager evaluate
-uvicorn recovery_manager.api:app --reload
-```
+~~~
 
-The demo is application-owned orchestration: it provisions fresh synthetic world state, runs
-the worker assessment and guarded publication, reloads each immutable assessment, and prints
-the actual assessment IDs, logical/persisted identities, evidence, ledger state, and outcome.
-It covers a USD 2 synthetic claim, insufficient evidence, unknown reconciliation, unavailable
-policy, partial/full settlement, and partial/full active pursuit. It creates no direct
-`CLAIM_READY` assessment or current-pointer rows.
+It writes authoritative JSON and derived Markdown results under `artifacts/evaluation/`. Review generated output before committing it; the command records the current Git revision as its engine provenance.
 
-The evaluation command loads the prediction-free
-`data/evaluation/recovery-engine-benchmark.json`, executes real isolated-PostgreSQL Recovery
-assessment/publication for every case, and writes `artifacts/evaluation/repair09-results.json`
-and `artifacts/evaluation/repair09-results.md`. The JSON artifact is authoritative; the
-Markdown report is derived from it. `repair09-benchmark.json` remains a pure evaluator fixture.
+### Run tests and checks
 
-Recovery Manager is deterministic on this path: financial event → evidence → trusted
-synthetic authority → entitlement derivation → reconciliation → assessment → synthetic
-claim packet, REVIEW, RESOLVED, or ALREADY_PURSUED.
+~~~bash
+python -m pytest tests -q
+python -m ruff check src tests alembic
+python -m mypy src
+alembic current
+alembic heads
+alembic check
+~~~
 
-### Limits
+`RECOVERY_REQUIRE_POSTGRES=true` makes required PostgreSQL testing fail if the database is unavailable rather than silently skipping it.
 
-- Synthetic policy amounts are synthetic. No authoritative operational Amazon recovery
-  policy is bundled; policy-unavailable inputs remain REVIEW.
-- AI does not decide financial readiness. The safety-critical decision path is deterministic.
-- Hashes are provenance and integrity identifiers, not tamper-proof guarantees.
-- Export creates a synthetic claim packet; it does not file a claim with Amazon.
-- Official evidence-contract interoperability remains disabled until authoritative artifacts
-  are available.
+## Verification evidence
 
----
+The final implementation passed the required PostgreSQL firewall with **292 passed, 0 failed, 0 skipped** and one unchanged Starlette warning. Focused adversarial verification also exercised typed evidence values, cutoff omission versus explicit `None`, evaluator truth conflicts, money and currency validation, duplicate claim accounting, and fresh-shell configuration. Ruff, mypy, and Alembic migration consistency passed for the audited implementation.
 
-## How this works
+## Repository structure
 
-You have a defined problem statement, supporting domain information and an engineering repository to build from. Understand the customer and operational workflow before writing code, then build and measure whether the solution works.
+~~~text
+src/recovery_manager/    Application, deterministic engine, CLI, and database boundary
+alembic/                 PostgreSQL migrations
+tests/                   Unit and PostgreSQL regression coverage
+data/evaluation/         Benchmark manifest and committed authoritative result artifacts
+artifacts/evaluation/    Generated authoritative evaluation reports
+.github/workflows/       Continuous integration
+ARCHITECTURE.md          System design and engineering decisions
+~~~
 
-Your goal is to turn the Recovery Manager problem into a working, measurable agent.
+## Scope and limitations
 
-### What you're given
-
-* This problem statement
-* A domain brief covering the real economics, fee structures and what a working day in a warehouse looks like *(shared by the organisers)*
-* The engineering rules in [`RULES.md`](RULES.md)
-* Repository data and supporting resources
-* One fully worked package for Returns Manager (customer letter, PR/FAQ, one-pager) as a reference for the standard expected. **Read it. Don't copy it.**
-
-### What you produce
-
-Build your solution in **your own GitHub fork**.
-
-Your final Round 2 submission should include:
-
-* A working Recovery Manager
-* A `README.md` explaining your solution, setup, assumptions and limitations
-* An `ARCHITECTURE.md`
-* An eval report/results with numbers and named failure modes
-* A working demo/video
-* A deployment URL, where applicable
-* Your mandatory LinkedIn post URL
-
-## Build and submission flow
-
-```text
-Understand
-    ↓
-Build
-    ↓
-Test
-    ↓
-Evaluate
-    ↓
-Document
-    ↓
-Demo / Deploy
-    ↓
-Submit
-```
-
-Round 2 is an **individual build**.
-
-The official build phase begins on **25 September 2026 at 9:00 AM IST**.
-
-Submissions open from **27 September 2026**.
-
-The final submission deadline is **1 October 2026 at 6:00 PM IST**.
-
-The submission form closes permanently at the deadline. **There is no resubmission.**
-
-All code commits forming your Round 2 submission must be made during the authorised build phase. Do not continue making Round 2 code changes after the build phase ends.
-
----
-
-## Evaluation
-
-Recovery Manager is evaluated differently from the vision-based Managers.
-
-The primary question is:
-
-> **When Recovery Manager recommends a claim, is that claim actually supported by the available evidence?**
-
-Your evaluation should focus on:
-
-* charge/report parsing,
-* charge-to-unit matching,
-* upstream evidence matching,
-* evidence interpretation,
-* claim correctness,
-* claim precision,
-* uncertainty/review handling,
-* false claims and missed recoverable claims,
-* important failure modes.
-
-Report the methodology clearly.
-
-### Primary metric
-
-```text
-Claim Precision
-=
-Correctly Supported Claims
---------------------------
-All Claims Recommended
-```
-
-Where measurable, also report:
-
-* total charges evaluated,
-* claims recommended,
-* correctly supported claims,
-* incorrectly recommended claims,
-* missed recoverable claims,
-* `UNCERTAIN` / review rate,
-* latency/cost where relevant.
-
----
-
-## Round 2 Evaluation — 100 Points
-
-| Criterion                                    |  Points |
-| -------------------------------------------- | ------: |
-| Problem Understanding & Solution Relevance   |  **15** |
-| Agent Functionality & Decision Quality       |  **25** |
-| Evaluation, Accuracy & Uncertainty Handling  |  **25** |
-| Evidence, Traceability & Engineering Quality |  **20** |
-| UX, Demo & Documentation                     |  **15** |
-| **TOTAL**                                    | **100** |
-
-For Recovery Manager, the evaluation focus is on **claim correctness and evidence quality**, not image-level accuracy.
-
----
-
-## Evidence and decision traceability
-
-Your Recovery Manager should make the claim traceable to the evidence that supports it.
-
-At minimum, the workflow should make it possible to understand:
-
-```text
-Charge
-   ↓
-Unit
-   ↓
-Upstream Evidence
-   ↓
-Evidence Interpretation
-   ↓
-Claim Decision
-   ↓
-Supporting Evidence
-```
-
-Use the official evidence contract provided by the organisers as the baseline for interoperability.
-
-Do not create a separate negotiated evidence schema for Round 2.
-
----
-
-## PASS · FAIL · UNCERTAIN
-
-For upstream checks and evidence states:
-
-* **PASS** — the evidence supports the condition.
-* **FAIL** — the evidence shows the condition is not met.
-* **UNCERTAIN** — the evidence is insufficient for a reliable judgment.
-
-`UNCERTAIN` is not simply a low-confidence PASS.
-
-For Recovery, missing, contradictory or insufficient evidence should lead to an appropriate review/uncertain outcome rather than an unsupported claim.
-
----
-
-## Engineering expectations
-
-* **Tenancy isolation:** If you store persistent data, keep organisation/client data properly isolated.
-* **Batch model calls:** Avoid unnecessary repeated model calls.
-* **Fail open:** A model or dependency failure should not silently discard incoming information. Preserve the available information and move the case into an appropriate pending/review state.
-* **Authoritative rules:** Where an external rule is required, use the authoritative source rather than relying on model memory or synthetic sample values.
-* **Evidence traceability:** Preserve the records used to support recovery decisions.
-
----
-
-## What we're being straight with you about
-
-* **The core assumption is untested.** Nobody knows yet whether the evidence produced by automated upstream Managers will be reliable enough to support recovery claims at scale. Finding out that an assumption does not hold, and documenting that clearly, counts as a useful outcome.
-* **Nobody has spoken to a customer yet.** If you can get a real prep center or seller on a call, ask them to rank the five problems by urgency. Don't ask whether they'd buy what you're building.
-* **The background documents disagree in places.** A contradiction is a finding. Raise it as an Issue labelled `finding`.
-
----
-
-## Submission
-
-### Submissions open
-
-**27 September 2026**
-
-### Final deadline
-
-**1 October 2026 · 6:00 PM IST**
-
-The submission form closes permanently at the deadline.
-
-**There is no reopening and no resubmission.**
-
-Your final submission should include:
-
-* your GitHub fork,
-* working Recovery Manager,
-* `README.md`,
-* `ARCHITECTURE.md`,
-* evaluation results,
-* demo video,
-* deployment URL where applicable,
-* LinkedIn post URL.
-
-### LinkedIn — Mandatory
-
-Publish a LinkedIn post about your Round 2 build.
-
-The post must:
-
-* mention your Recovery Manager build,
-* explain what you built,
-* tag **CodeQuesters**,
-* tag **Sydon.AI**.
-
-Include the LinkedIn post URL in the submission form.
-
----
-
-## Commit rule
-
-All code commits forming your Round 2 submission must be made during the authorised build phase.
-
-Round 2 begins:
-
-**25 September 2026 · 9:00 AM IST**
-
-Once the build phase ends, do not continue making Round 2 code changes.
-
----
-
-## Round 2 → Round 3
-
-Round 2 is about your **individual Recovery Manager**.
-
-Participants selected for Round 3 will work in five-person Pods combining:
-
-```text
-Receiving Manager
-+
-Prep Manager
-+
-Pack Manager
-+
-Returns Manager
-+
-Recovery Manager
-```
-
-The objective is to integrate the five specialised agents into one connected end-to-end commerce system.
-
-Your Round 2 implementation should therefore have clear outputs, structured evidence and an understandable interface for downstream integration.
-
----
-
-*Cube Buildathon · Commerce Context*
+- Recovery-policy mechanics and benchmark amounts are synthetic. No authoritative operational Amazon recovery policy is bundled.
+- The project makes no claim about official Amazon reimbursement eligibility, guaranteed reimbursement, or full operational-policy interoperability.
+- Export produces a synthetic claim packet; it does not file a claim with Amazon.
+- Provenance and hash fields aid traceability; they are not tamper-proof security guarantees.
+- The benchmark measures the synthetic mechanics represented here. It is not a claim of real-world recovery accuracy.
