@@ -1,0 +1,221 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Recovery Manager — CUBE Buildathon 2026</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0b1020;
+      color: #eef2ff;
+      line-height: 1.6;
+    }
+    .wrap {
+      width: min(960px, 92%);
+      margin: auto;
+      padding: 72px 0;
+    }
+    .badge {
+      display: inline-block;
+      padding: 7px 12px;
+      border: 1px solid #334155;
+      border-radius: 999px;
+      color: #cbd5e1;
+      font-size: 14px;
+      margin-bottom: 20px;
+    }
+    h1 {
+      font-size: clamp(42px, 8vw, 76px);
+      line-height: 1;
+      margin: 0 0 20px;
+      letter-spacing: -0.045em;
+    }
+    h2 {
+      margin-top: 50px;
+      font-size: 26px;
+    }
+    .lead {
+      font-size: 22px;
+      max-width: 760px;
+      color: #cbd5e1;
+    }
+    .principle {
+      margin: 36px 0;
+      padding: 24px;
+      border-left: 4px solid #818cf8;
+      background: #111827;
+      font-size: 25px;
+      font-weight: 700;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit,minmax(230px,1fr));
+      gap: 16px;
+      margin-top: 20px;
+    }
+    .card {
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 14px;
+      padding: 20px;
+    }
+    .metric {
+      font-size: 28px;
+      font-weight: 800;
+    }
+    .muted { color: #94a3b8; }
+    a.button {
+      display: inline-block;
+      margin: 12px 10px 0 0;
+      padding: 12px 18px;
+      border-radius: 10px;
+      background: #eef2ff;
+      color: #111827;
+      text-decoration: none;
+      font-weight: 700;
+    }
+    code {
+      background: #1e293b;
+      padding: 2px 6px;
+      border-radius: 5px;
+    }
+    footer {
+      margin-top: 60px;
+      padding-top: 24px;
+      border-top: 1px solid #1f2937;
+      color: #94a3b8;
+    }
+  </style>
+</head>
+
+<body>
+<div class="wrap">
+
+  <div class="badge">CUBE Buildathon 2026 · Round 2 · RCY — Recovery Manager</div>
+
+  <h1>Recovery Manager</h1>
+
+  <p class="lead">
+    A deterministic, evidence-driven financial recovery engine that distinguishes
+    money that appears missing from money that is actually justified and currently
+    actionable for recovery.
+  </p>
+
+  <div class="principle">
+    UNKNOWN ≠ ZERO
+  </div>
+
+  <p>
+    Missing evidence is not proof. Unknown reconciliation is not zero.
+    Historical validity is not automatically current actionability.
+    And one entitlement must not be recovered twice.
+  </p>
+
+  <a class="button"
+     href="https://github.com/saikiranpulagalla/cube26-rcy-0125-saikiranpulagalla"
+     target="_blank">
+     View GitHub Repository
+  </a>
+
+  <h2>How it works</h2>
+
+  <div class="grid">
+    <div class="card">
+      <strong>1 · Canonicalize</strong>
+      <p class="muted">Financial source records become tenant-scoped canonical events and obligations.</p>
+    </div>
+
+    <div class="card">
+      <strong>2 · Prove</strong>
+      <p class="muted">Evidence and synthetic authority must support the exact recovery proposition.</p>
+    </div>
+
+    <div class="card">
+      <strong>3 · Reconcile</strong>
+      <p class="muted">Linked settlements and active recovery pursuits reduce the remaining economic residual.</p>
+    </div>
+
+    <div class="card">
+      <strong>4 · Decide safely</strong>
+      <p class="muted">Supported cases may become claim-ready. Unknown or unsupported cases fail closed to REVIEW.</p>
+    </div>
+  </div>
+
+  <h2>Residual economics</h2>
+
+  <div class="card">
+    <p><code>E</code> = justified gross entitlement</p>
+    <p><code>C</code> = net linked settlement</p>
+    <p><code>U = E - C</code></p>
+    <p><code>A</code> = active pursuit allocation</p>
+    <p><code>R = U - A</code> = remaining actionable residual</p>
+  </div>
+
+  <h2>Real PostgreSQL-backed demo</h2>
+
+  <div class="grid">
+    <div class="card">Supported recovery<br><strong>SYNTHETIC_CLAIM_READY · USD 2.00</strong></div>
+    <div class="card">Evidence insufficient<br><strong>REVIEW</strong></div>
+    <div class="card">Reconciliation unknown<br><strong>REVIEW</strong></div>
+    <div class="card">Policy unavailable<br><strong>REVIEW</strong></div>
+    <div class="card">Partial settlement<br><strong>SYNTHETIC_CLAIM_READY · USD 1.00</strong></div>
+    <div class="card">Fully settled<br><strong>RESOLVED</strong></div>
+    <div class="card">Partial active pursuit<br><strong>SYNTHETIC_CLAIM_READY · USD 1.00</strong></div>
+    <div class="card">Fully pursued<br><strong>ALREADY_PURSUED</strong></div>
+  </div>
+
+  <h2>Evaluation</h2>
+
+  <div class="grid">
+    <div class="card">
+      <div class="metric">1.0</div>
+      <div class="muted">Strict claim precision</div>
+    </div>
+
+    <div class="card">
+      <div class="metric">0.25</div>
+      <div class="muted">Decision coverage</div>
+    </div>
+
+    <div class="card">
+      <div class="metric">{}</div>
+      <div class="muted">Unsupported exposure</div>
+    </div>
+
+    <div class="card">
+      <div class="metric">real_engine</div>
+      <div class="muted">Runner mode</div>
+    </div>
+  </div>
+
+  <h2>Engineering boundaries</h2>
+
+  <p>
+    The authoritative monetary decision path is deterministic and evidence-constrained.
+    An LLM does not determine financial entitlement.
+  </p>
+
+  <p>
+    PostgreSQL provides tenant isolation through row-level security and separate
+    application, worker, and owner roles. Decision publication is guarded, and
+    historical decision-time provenance is preserved independently from current
+    actionability.
+  </p>
+
+  <h2>Scope</h2>
+
+  <p class="muted">
+    Recovery-policy mechanics are synthetic. This project does not claim official
+    Amazon recovery-policy accuracy, guaranteed reimbursement, or live Amazon claim filing.
+  </p>
+
+  <footer>
+    Built by Sai Kiran for CUBE Buildathon 2026 — RCY Recovery Manager.
+  </footer>
+
+</div>
+</body>
+</html>
