@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import text
@@ -139,6 +140,25 @@ def test_adapter_projects_cutoff_setup_without_fabricating_explicit_values(
     else:
         domain, cutoff = expected_cutoff
         assert reconciliation[domain]["cutoff"] == cutoff
+
+
+@pytest.mark.parametrize(
+    ("field", "cutoff", "recommendation"),
+    (
+        ("settlement_cutoff", datetime(2020, 1, 1, tzinfo=UTC), "SYNTHETIC_CLAIM_READY"),
+        ("pursuit_cutoff", datetime(2020, 1, 1, tzinfo=UTC), "SYNTHETIC_CLAIM_READY"),
+        ("settlement_cutoff", datetime(2999, 1, 1, tzinfo=UTC), "REVIEW"),
+        ("pursuit_cutoff", datetime(2999, 1, 1, tzinfo=UTC), "REVIEW"),
+    ),
+)
+def test_direct_typed_cutoff_is_preserved_by_adapter(
+    runtime_factory, worker_factory, settings, field, cutoff, recommendation
+) -> None:
+    setup = SyntheticRecoverySetup(**{field: cutoff})
+    execution = RecoveryEngineBenchmarkAdapter(runtime_factory, worker_factory, settings).run(setup)
+    reconciliation = execution.snapshot["reconciliation"]
+    assert execution.prediction.predicted_recommendation == recommendation
+    assert reconciliation[field.removesuffix("_cutoff").upper()]["cutoff"] == cutoff.isoformat()
 
 
 def test_adapter_reverse_maps_persisted_identities_without_truth(

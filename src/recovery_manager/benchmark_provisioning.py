@@ -46,6 +46,14 @@ _SETUP_FIELDS = frozenset({
 _RECONCILIATION_STATES = frozenset({"RECONCILED_NONE", "RECONCILED_COMPLETE", "UNKNOWN"})
 
 
+class _OmittedCutoff:
+    """Private marker for a cutoff field absent from typed benchmark setup."""
+
+
+_OMITTED_CUTOFF = _OmittedCutoff()
+_Cutoff = datetime | _OmittedCutoff
+
+
 def configure_benchmark_transaction(session: Session) -> None:
     """Bound benchmark-only work; a timeout is never converted into REVIEW."""
     session.execute(text(f"SET LOCAL lock_timeout = '{BENCHMARK_LOCK_TIMEOUT}'"))
@@ -66,14 +74,17 @@ def _timestamp(value: object, field: str) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-def _cutoff(raw: Mapping[str, Any], field: str) -> datetime | None:
+def _cutoff(raw: Mapping[str, Any], field: str) -> _Cutoff:
     """Parse an optional fixture cutoff without treating explicit null as a default."""
     if field not in raw:
-        return None
+        return _OMITTED_CUTOFF
     value = raw[field]
     if value is None:
         raise ValueError(f"benchmark {field} may be omitted but cannot be null")
-    return _timestamp(value, field)
+    parsed = _timestamp(value, field)
+    if parsed is None:
+        raise ValueError(f"benchmark {field} may be omitted but cannot be null")
+    return parsed
 
 
 def _minor(value: object, field: str) -> int:
@@ -94,8 +105,8 @@ class SyntheticRecoverySetup:
     reconciliation: str | None = None
     settlement_reconciliation: str | None = None
     pursuit_reconciliation: str | None = None
-    settlement_cutoff: datetime | None = None
-    pursuit_cutoff: datetime | None = None
+    settlement_cutoff: _Cutoff | None = _OMITTED_CUTOFF
+    pursuit_cutoff: _Cutoff | None = _OMITTED_CUTOFF
     settlement_minor: int = 0
     pursuit_minor: int = 0
     policy_available: bool = True
@@ -104,6 +115,14 @@ class SyntheticRecoverySetup:
     logical_opportunity_id: str = "SYNTHETIC-OPPORTUNITY"
     logical_obligation_id: str = "SYNTHETIC-OBLIGATION"
     logical_evidence_id: str = "E-FEE-VALID"
+
+    def __post_init__(self) -> None:
+        for field in ("settlement_cutoff", "pursuit_cutoff"):
+            value = getattr(self, field)
+            if value is None:
+                raise ValueError(f"benchmark {field} may be omitted but cannot be null")
+            if not isinstance(value, datetime | _OmittedCutoff):
+                raise ValueError(f"benchmark {field} must be an ISO-8601 timestamp")
 
     @classmethod
     def from_manifest(cls, raw: Mapping[str, Any]) -> SyntheticRecoverySetup:
@@ -276,9 +295,13 @@ def provision_synthetic_recovery_case(
     session.add_all((evidence, obligation))
     session.flush()
     now = datetime.now(UTC)
+    settlement_cutoff = now if setup.settlement_cutoff is _OMITTED_CUTOFF else setup.settlement_cutoff
+    pursuit_cutoff = now if setup.pursuit_cutoff is _OMITTED_CUTOFF else setup.pursuit_cutoff
+    if not isinstance(settlement_cutoff, datetime) or not isinstance(pursuit_cutoff, datetime):
+        raise ValueError("benchmark cutoff must be omitted or a timestamp")
     session.add_all((
-        ReconciliationState(org_id=org_id, obligation_id=obligation.id, domain="SETTLEMENT", state=setup.reconciliation_state("SETTLEMENT"), cutoff=now if setup.settlement_cutoff is None else setup.settlement_cutoff, source_set_sha256="e" * 64),
-        ReconciliationState(org_id=org_id, obligation_id=obligation.id, domain="PURSUIT", state=setup.reconciliation_state("PURSUIT"), cutoff=now if setup.pursuit_cutoff is None else setup.pursuit_cutoff, source_set_sha256="f" * 64),
+        ReconciliationState(org_id=org_id, obligation_id=obligation.id, domain="SETTLEMENT", state=setup.reconciliation_state("SETTLEMENT"), cutoff=settlement_cutoff, source_set_sha256="e" * 64),
+        ReconciliationState(org_id=org_id, obligation_id=obligation.id, domain="PURSUIT", state=setup.reconciliation_state("PURSUIT"), cutoff=pursuit_cutoff, source_set_sha256="f" * 64),
     ))
     session.add(EvidenceAssertion(org_id=org_id, evidence_record_id=evidence.id, source_record_version_id=source.id, proposition_key="synthetic-invalid-fee", subject_key="SYN-FEE-001", polarity="SUPPORTS", fact_path="fee.valid", asserted_value=setup.evidence == "valid", scope={"coverage": "KNOWN", "premise_key": "SYNTHETIC_VALID_FEE"}, decisive=True))
     session.add(AmountDerivation(org_id=org_id, obligation_id=obligation.id, derivation_version=1, currency=setup.currency, observed_amount_minor=setup.financial_event_amount_minor, expected_amount_minor=setup.permitted_amount_minor, justified_entitlement_minor=setup.financial_event_amount_minor - setup.permitted_amount_minor, rounding_rule="integer minor units", basis_class="SYNTHETIC_ONLY", source_basis=provenance))

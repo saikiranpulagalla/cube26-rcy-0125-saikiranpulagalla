@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -131,7 +132,7 @@ def _claim_amount_is_valid(amount: object) -> bool:
 
 
 def _claim_currency_is_valid(currency: object) -> bool:
-    return isinstance(currency, str) and len(currency) == 3 and currency.isupper()
+    return isinstance(currency, str) and re.fullmatch(r"[A-Z]{3}", currency) is not None
 
 
 def _validate_claim_value(

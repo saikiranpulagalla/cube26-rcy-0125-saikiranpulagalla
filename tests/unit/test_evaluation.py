@@ -178,12 +178,21 @@ def test_positive_integer_claim_amounts_remain_valid(amount: int) -> None:
     assert result["strict_true_positives"] == 1
 
 
-@pytest.mark.parametrize("currency", (None, ""))
+@pytest.mark.parametrize(
+    "currency",
+    (None, "", "U", "US", "USDD", "usd", "Usd", "uSD", " US", "USD ", "U D", "U1D", "1SD", "$$$", "ÜSD", "US\n", "USD\n"),
+)
 def test_claim_currency_is_required_for_truth_and_prediction(currency: object) -> None:
     with pytest.raises(ValueError, match="claim currency"):
         metrics([_case(predicted_currency=currency)])  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="claim currency"):
         metrics([_case(expected_currency=currency)])  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("currency", ("USD", "EUR", "JPY", "ABC"))
+def test_claim_currency_accepts_exact_ascii_three_letter_shape(currency: str) -> None:
+    result = metrics([_case(expected_currency=currency, predicted_currency=currency)])
+    assert result["strict_true_positives"] == 1
 
 
 def test_non_claim_recommendations_allow_null_amount() -> None:
