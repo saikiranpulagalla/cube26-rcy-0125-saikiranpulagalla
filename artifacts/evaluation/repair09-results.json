@@ -1,10 +1,10 @@
 {
   "benchmark": "recovery-engine-synthetic-v1",
-  "engine_benchmarked_revision": "78a50066c171bde565871ff9aede8c661423c315",
+  "engine_benchmarked_revision": "0f2d79334a3cf07c9d9e088b47ae0946336f316a",
   "executions": [
     {
       "amount_minor": 200,
-      "assessment_id": "f38cafe2-d813-49f8-a877-e8f82c1f4580",
+      "assessment_id": "f0551620-6da7-4f35-ab7c-2fb9e16ae4ec",
       "basis": "INVALID_FEE",
       "case_id": "synthetic-positive",
       "currency": "USD",
@@ -16,7 +16,7 @@
     },
     {
       "amount_minor": null,
-      "assessment_id": "e87065af-7467-4c7c-937d-24f7c545e5c0",
+      "assessment_id": "982ab9fe-2efe-44d7-9589-734ac9f86b5e",
       "basis": "INVALID_FEE",
       "case_id": "synthetic-evidence-insufficient",
       "currency": null,
@@ -28,7 +28,7 @@
     },
     {
       "amount_minor": null,
-      "assessment_id": "29dc1f62-20d0-45dc-a309-d292b3972204",
+      "assessment_id": "901f9df8-82f6-4f1c-8253-b05440c57c4c",
       "basis": "INVALID_FEE",
       "case_id": "synthetic-reconciliation-unknown",
       "currency": null,
@@ -40,7 +40,7 @@
     },
     {
       "amount_minor": null,
-      "assessment_id": "fd889dc3-dfbf-4b74-a4a4-a09a22b4a17d",
+      "assessment_id": "26ec30bc-069d-44be-839c-523340745c0b",
       "basis": "INVALID_FEE",
       "case_id": "policy-unavailable",
       "currency": null,
