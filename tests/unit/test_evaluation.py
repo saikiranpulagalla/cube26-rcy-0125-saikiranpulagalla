@@ -177,6 +177,32 @@ def test_engine_benchmark_rejects_unsupported_setup_fields(tmp_path: Path) -> No
         load_engine_benchmark(manifest)
 
 
+@pytest.mark.parametrize(
+    ("cutoffs", "label"),
+    (
+        ({"settlement_cutoff": None}, "settlement_cutoff"),
+        ({"pursuit_cutoff": None}, "pursuit_cutoff"),
+        ({"settlement_cutoff": None, "pursuit_cutoff": None}, "settlement_cutoff"),
+    ),
+)
+def test_engine_benchmark_rejects_explicit_null_reconciliation_cutoff(
+    tmp_path: Path, cutoffs: dict[str, object], label: str
+) -> None:
+    manifest = tmp_path / "engine.json"
+    setup = ",".join(f'\"{field}\":null' for field in cutoffs)
+    manifest.write_text(
+        "{"
+        '\"schema_version\":\"recovery-engine-benchmark/v1\",'
+        '\"cases\":[{\"case_id\":\"x\",\"stratum\":\"SYNTHETIC_MECHANICS\",'
+        f'\"setup\":{{{setup}}},'
+        '\"ground_truth\":{\"opportunity_id\":\"opp\",\"obligation_id\":\"obl\",'
+        '\"required_evidence_ids\":[]}}]}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=label):
+        load_engine_benchmark(manifest)
+
+
 def test_report_renders_execution_provenance_from_one_result_model(tmp_path: Path) -> None:
     report = {
         "benchmark": "engine", "runner_mode": "real_engine",

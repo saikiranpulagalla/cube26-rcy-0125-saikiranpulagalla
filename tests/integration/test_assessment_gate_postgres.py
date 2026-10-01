@@ -86,8 +86,8 @@ def _assess_synthetic_candidate(
     premise_key: str = "SYNTHETIC_VALID_FEE",
     evidence_quantity: int = 1,
     required_quantity: str = "1",
-    source_value: bool = True,
-    asserted_value: bool = True,
+    source_value: object = True,
+    asserted_value: object = True,
     fact_path: str = "fee.valid",
     subject_key: str = "SYN-FEE-001",
     mismatched_source_version: bool = False,
@@ -258,6 +258,7 @@ def _assess_synthetic_candidate(
         ({"evidence_quantity": 0}, "org_proof_insufficient"),
         ({"source_value": False, "asserted_value": True}, "org_proof_false_value"),
         ({"source_value": False, "asserted_value": False}, "org_proof_false_support"),
+        ({"source_value": 1, "asserted_value": True}, "org_proof_numeric_boolean_mismatch"),
         ({"mismatched_source_version": True}, "org_proof_wrong_source"),
         ({"subject_key": "other-business-instance"}, "org_proof_wrong_subject"),
         ({"polarity": "CONTRADICTS"}, "org_proof_contradictory"),
@@ -281,6 +282,35 @@ def test_synthetic_readiness_requires_exact_required_evidence_premise(
             synthetic_capability_enabled=True,
         )
         assert assessment.conclusion == "REVIEW"
+
+
+@pytest.mark.parametrize(
+    ("source_value", "asserted_value", "expected"),
+    ((1, True, "REVIEW"), (True, True, "SYNTHETIC_CLAIM_READY")),
+)
+def test_live_readiness_requires_exact_json_evidence_value_type(
+    runtime_factory, worker_factory, settings, source_value: object, asserted_value: object, expected: str
+) -> None:
+    org_id = f"org_json_evidence_type_{source_value!r}_{asserted_value!r}".replace(" ", "_")
+    with runtime_factory() as session, session.begin():
+        obligation_id = _assess_synthetic_candidate(
+            session,
+            settings,
+            org_id=org_id,
+            source_value=source_value,
+            asserted_value=asserted_value,
+        )
+    with worker_factory() as session, session.begin():
+        set_local_tenant(session, org_id)
+        assessment = assess_synthetic(
+            session,
+            org_id,
+            obligation_id,
+            "SYN-FEE-001",
+            "synthetic-invalid-fee",
+            synthetic_capability_enabled=True,
+        )
+    assert assessment.conclusion == expected
 
 
 @pytest.mark.parametrize(

@@ -43,6 +43,43 @@ def _field(payload: dict[str, Any], path: str) -> object:
     return value
 
 
+def _json_values_equal(actual: object, asserted: object) -> bool:
+    """Compare JSON values without Python's boolean-as-integer equivalence.
+
+    JSON has one number type, so integral and decimal numeric values compare
+    numerically.  Booleans remain a distinct JSON type at every nesting level.
+    """
+    if isinstance(actual, bool) or isinstance(asserted, bool):
+        return isinstance(actual, bool) and isinstance(asserted, bool) and actual is asserted
+    if isinstance(actual, int | float) or isinstance(asserted, int | float):
+        return (
+            isinstance(actual, int | float)
+            and not isinstance(actual, bool)
+            and isinstance(asserted, int | float)
+            and not isinstance(asserted, bool)
+            and actual == asserted
+        )
+    if actual is None or asserted is None:
+        return actual is None and asserted is None
+    if isinstance(actual, str) or isinstance(asserted, str):
+        return isinstance(actual, str) and isinstance(asserted, str) and actual == asserted
+    if isinstance(actual, list) or isinstance(asserted, list):
+        return (
+            isinstance(actual, list)
+            and isinstance(asserted, list)
+            and len(actual) == len(asserted)
+            and all(_json_values_equal(left, right) for left, right in zip(actual, asserted, strict=True))
+        )
+    if isinstance(actual, dict) or isinstance(asserted, dict):
+        return (
+            isinstance(actual, dict)
+            and isinstance(asserted, dict)
+            and actual.keys() == asserted.keys()
+            and all(_json_values_equal(actual[key], asserted[key]) for key in actual)
+        )
+    return False
+
+
 def prove_assertion(session: Session, org_id: str, assertion: EvidenceAssertion) -> EvidenceProof:
     evidence = session.execute(
         select(EvidenceRecord).where(
@@ -77,7 +114,7 @@ def prove_assertion(session: Session, org_id: str, assertion: EvidenceAssertion)
         return EvidenceProof(
             assertion.id, False, lifecycle is None or lifecycle == "AVAILABLE", "FACT_PATH_MISSING"
         )
-    if actual != assertion.asserted_value:
+    if not _json_values_equal(actual, assertion.asserted_value):
         return EvidenceProof(
             assertion.id,
             False,

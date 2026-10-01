@@ -97,6 +97,50 @@ def test_adapter_projects_declared_ledger_setup(
     assert prediction.predicted_amount_minor == amount
 
 
+@pytest.mark.parametrize(
+    ("raw", "recommendation", "expected_cutoff"),
+    (
+        ({}, "SYNTHETIC_CLAIM_READY", None),
+        (
+            {"settlement_cutoff": "2020-01-01T00:00:00Z"},
+            "SYNTHETIC_CLAIM_READY",
+            ("SETTLEMENT", "2020-01-01T00:00:00+00:00"),
+        ),
+        (
+            {"pursuit_cutoff": "2020-01-01T00:00:00Z"},
+            "SYNTHETIC_CLAIM_READY",
+            ("PURSUIT", "2020-01-01T00:00:00+00:00"),
+        ),
+        (
+            {"settlement_cutoff": "2999-01-01T00:00:00Z"},
+            "REVIEW",
+            ("SETTLEMENT", "2999-01-01T00:00:00+00:00"),
+        ),
+        (
+            {"pursuit_cutoff": "2999-01-01T00:00:00Z"},
+            "REVIEW",
+            ("PURSUIT", "2999-01-01T00:00:00+00:00"),
+        ),
+    ),
+)
+def test_adapter_projects_cutoff_setup_without_fabricating_explicit_values(
+    runtime_factory, worker_factory, settings, raw, recommendation, expected_cutoff
+) -> None:
+    setup = SyntheticRecoverySetup.from_manifest(raw)
+    execution = RecoveryEngineBenchmarkAdapter(runtime_factory, worker_factory, settings).run(setup)
+    assert execution.prediction.predicted_recommendation == recommendation
+    reconciliation = execution.snapshot["reconciliation"]
+    assert isinstance(reconciliation, dict)
+    if expected_cutoff is None:
+        assert all(
+            isinstance(value, dict) and value["cutoff"] is not None
+            for value in reconciliation.values()
+        )
+    else:
+        domain, cutoff = expected_cutoff
+        assert reconciliation[domain]["cutoff"] == cutoff
+
+
 def test_adapter_reverse_maps_persisted_identities_without_truth(
     runtime_factory, worker_factory, settings
 ) -> None:
