@@ -146,6 +146,28 @@ Read the committed [JSON result](artifacts/evaluation/repair09-results.json) and
 - Isolated benchmark preflight that verifies designation, endpoint equality, roles, migration version, and bounded database timeouts.
 - Strict evaluator validation for truth conflicts, claim money, currency shape, and one-to-one matching.
 
+## Recovery contract compatibility
+
+The repository also exposes a small, fail-closed compatibility boundary for the supplied
+Recovery data contract:
+
+- **Charges** validate normalized Amazon-fee accusations at unit, shipment, or order
+  granularity.
+- **Credits** accept nullable `case_id` values and calculate currency-exact net
+  reimbursement, including explicit reversal lineage.
+- **Evidence** validates the supplied Receiving, Prep, Pack, and Returns `check_key`
+  registry, including optional shipment identity. Missing, uncertain, or
+  insufficiently attributed evidence never supports a recovery.
+- **Rules** are typed inputs. A filing window or eligibility rule that is not supplied by
+  an authoritative source remains unavailable; the adapter does not fabricate Amazon
+  policy.
+
+The compatibility projection returns `contested`, `accepted`,
+`insufficient_evidence`, `already_reimbursed`, or `out_of_window`. These are
+contract-facing verdicts; the internal engine retains its richer lifecycle outcomes
+such as `SYNTHETIC_CLAIM_READY`, `REVIEW`, `RESOLVED`, and `ALREADY_PURSUED`.
+Granularity or attribution gaps fail closed as `insufficient_evidence`.
+
 ## Quickstart
 
 Recovery Manager requires **Python 3.12** and **PostgreSQL 16**. Use a dedicated database for demo, evaluation, and required PostgreSQL tests. The examples use `recovery_test`, which satisfies the test harness safety guard; never point these commands at a development or production database.
