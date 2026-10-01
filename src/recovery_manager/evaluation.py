@@ -125,19 +125,71 @@ def _strict(prediction: EvaluationCase, truth: EvaluationCase) -> bool:
     )
 
 
-def _score(cases: list[EvaluationCase]) -> dict[str, Any]:
+def _claim_amount_is_valid(amount: object) -> bool:
+    """Accept the exact integral minor-unit domain used by claim predictions."""
+    return isinstance(amount, int) and not isinstance(amount, bool) and amount > 0
+
+
+def _claim_currency_is_valid(currency: object) -> bool:
+    return isinstance(currency, str) and len(currency) == 3 and currency.isupper()
+
+
+def _validate_claim_value(
+    recommendation: str, amount: object, currency: object, *, side: str
+) -> None:
+    if recommendation != READY:
+        return
+    if not _claim_amount_is_valid(amount):
+        raise ValueError(f"{side} claim amount must be a positive integer")
+    if not _claim_currency_is_valid(currency):
+        raise ValueError(f"{side} claim currency must be a three-letter uppercase code")
+
+
+def _truth_identity(case: EvaluationCase) -> tuple[object, ...]:
+    """All oracle fields which must agree for one economic opportunity."""
+    return (
+        case.expected_opportunity_id,
+        case.expected_obligation_id,
+        case.expected_recommendation,
+        case.expected_basis,
+        case.expected_amount_minor,
+        case.expected_currency,
+        case.required_evidence,
+        case.stratum,
+    )
+
+
+def _truth_by_opportunity(cases: list[EvaluationCase]) -> dict[str, EvaluationCase]:
     truth: dict[str, EvaluationCase] = {}
     for case in cases:
-        prior = truth.get(case.opportunity())
-        if prior is not None and (
-            prior.expected_recommendation, prior.expected_amount_minor, prior.expected_basis,
-            prior.expected_currency, prior.required_evidence,
-        ) != (
-            case.expected_recommendation, case.expected_amount_minor, case.expected_basis,
-            case.expected_currency, case.required_evidence,
-        ):
-            raise ValueError(f"conflicting ground truth for opportunity {case.opportunity()}")
-        truth[case.opportunity()] = case
+        opportunity = case.opportunity()
+        prior = truth.get(opportunity)
+        if prior is not None and _truth_identity(prior) != _truth_identity(case):
+            raise ValueError(f"conflicting ground truth for opportunity {opportunity}")
+        # Identical duplicate rows are idempotent, and do not create another truth.
+        truth.setdefault(opportunity, case)
+    return truth
+
+
+def _validate_cases(cases: list[EvaluationCase]) -> None:
+    for case in cases:
+        _validate_claim_value(
+            case.expected_recommendation,
+            case.expected_amount_minor,
+            case.expected_currency,
+            side="expected",
+        )
+        _validate_claim_value(
+            case.predicted_recommendation,
+            case.predicted_amount_minor,
+            case.predicted_currency,
+            side="predicted",
+        )
+    _truth_by_opportunity(cases)
+
+
+def _score(cases: list[EvaluationCase]) -> dict[str, Any]:
+    truth = _truth_by_opportunity(cases)
     predictions = [case for case in cases if case.predicted_recommendation == READY]
     gold = [case for case in truth.values() if case.expected_recommendation == READY]
     matched: set[str] = set()
@@ -174,6 +226,7 @@ def _score(cases: list[EvaluationCase]) -> dict[str, Any]:
 def metrics(cases: list[EvaluationCase]) -> dict[str, Any]:
     """Strict one-to-one claim metrics, separated by authority stratum."""
     validate_split(cases)
+    _validate_cases(cases)
     result = _score(cases)
     result["strata"] = {
         name: _score([case for case in cases if case.stratum == name])

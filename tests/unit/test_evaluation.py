@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -100,6 +101,97 @@ def test_two_truths_and_three_matching_predictions_leave_one_unmatched() -> None
     assert result["strict_true_positives"] == 2
     assert result["claims_recommended"] == 3
     assert result["false_exposure_minor"] == {"USD": 200}
+
+
+def test_conflicting_obligation_truth_rejects_every_input_order() -> None:
+    claim = _case(
+        scenario_id="holdout/claim", expected_opportunity_id="O1", predicted_opportunity_id="O1",
+        expected_obligation_id="OB-A", predicted_obligation_id="OB-A",
+    )
+    review_prediction = _case(
+        scenario_id="holdout/review", expected_opportunity_id="O1", predicted_opportunity_id="O1",
+        expected_obligation_id="OB-B", predicted_obligation_id="OB-B",
+        expected_recommendation="REVIEW", expected_amount_minor=None, expected_currency=None,
+        predicted_recommendation="REVIEW", predicted_amount_minor=None,
+    )
+    for ordered in ((claim, review_prediction), (review_prediction, claim)):
+        with pytest.raises(ValueError, match="conflicting ground truth"):
+            metrics(list(ordered))
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"expected_obligation_id": "OB-OTHER"},
+        {"expected_recommendation": "REVIEW"},
+        {"expected_basis": "OTHER"},
+        {"expected_amount_minor": 201},
+        {"expected_currency": "EUR"},
+        {"required_evidence": frozenset({"different-evidence"})},
+        {"stratum": "POLICY_UNAVAILABLE"},
+    ),
+)
+def test_every_decisive_truth_conflict_is_rejected(changes: dict[str, object]) -> None:
+    original = _case(expected_opportunity_id="O1", predicted_opportunity_id="O1")
+    conflicting = replace(original, scenario_id="holdout/conflict", **changes)
+    with pytest.raises(ValueError, match="conflicting ground truth"):
+        metrics([original, conflicting])
+
+
+def test_identical_duplicate_truth_is_idempotent() -> None:
+    truth_and_prediction = _case(expected_opportunity_id="O1", predicted_opportunity_id="O1")
+    duplicate_truth = replace(
+        truth_and_prediction,
+        scenario_id="holdout/duplicate-truth",
+        predicted_recommendation="REVIEW",
+        predicted_amount_minor=None,
+    )
+    result = metrics([truth_and_prediction, duplicate_truth])
+    assert result["strict_true_positives"] == 1
+    assert result["claims_recommended"] == 1
+    assert result == metrics([duplicate_truth, truth_and_prediction])
+
+
+def test_prediction_permutation_is_order_independent() -> None:
+    supported = _case(
+        scenario_id="holdout/supported", expected_opportunity_id="O1", predicted_opportunity_id="O1",
+    )
+    duplicate_prediction = replace(supported, scenario_id="holdout/duplicate")
+    assert metrics([supported, duplicate_prediction]) == metrics([duplicate_prediction, supported])
+
+
+@pytest.mark.parametrize("amount", (0, -1, True, False, 1.0, 200.0, "200", "0", None, [], {}))
+def test_invalid_predicted_claim_amount_is_rejected(amount: object) -> None:
+    with pytest.raises(ValueError, match="predicted claim amount"):
+        metrics([_case(predicted_amount_minor=amount)])  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("amount", (0, -1, True, 1.0, "200", None))
+def test_invalid_truth_claim_amount_is_rejected(amount: object) -> None:
+    with pytest.raises(ValueError, match="expected claim amount"):
+        metrics([_case(expected_amount_minor=amount)])  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("amount", (1, 200, 2**31))
+def test_positive_integer_claim_amounts_remain_valid(amount: int) -> None:
+    result = metrics([_case(expected_amount_minor=amount, predicted_amount_minor=amount)])
+    assert result["strict_true_positives"] == 1
+
+
+@pytest.mark.parametrize("currency", (None, ""))
+def test_claim_currency_is_required_for_truth_and_prediction(currency: object) -> None:
+    with pytest.raises(ValueError, match="claim currency"):
+        metrics([_case(predicted_currency=currency)])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="claim currency"):
+        metrics([_case(expected_currency=currency)])  # type: ignore[arg-type]
+
+
+def test_non_claim_recommendations_allow_null_amount() -> None:
+    review = _case(
+        expected_recommendation="REVIEW", expected_amount_minor=None, expected_currency=None,
+        predicted_recommendation="REVIEW", predicted_amount_minor=None, predicted_currency=None,
+    )
+    assert metrics([review])["claims_recommended"] == 0
 
 
 def test_dependency_groups_cannot_leak_between_splits() -> None:

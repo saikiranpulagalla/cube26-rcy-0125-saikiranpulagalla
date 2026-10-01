@@ -65,31 +65,64 @@ Recovery also gets `data/upstream/`, a copy of the other four files, so you can 
 
 ## Quickstart and bounded demo
 
-Recovery Manager uses Python 3.12 and PostgreSQL 16. From a fresh shell, copy
-`.env.example` to an uncommitted `.env`, replace its password placeholders, and start the
-loopback-only PostgreSQL service. The bootstrap creates separate `recovery_owner`,
-`recovery_app`, and `recovery_worker` roles; keep all three URLs pointed at the same isolated
-database. Set `RECOVERY_BENCHMARK_DATABASE=true` only for that isolated demo/benchmark database.
+Recovery Manager uses Python 3.12 and PostgreSQL 16. The demo, evaluation, migrations, and
+required PostgreSQL tests must use one **isolated** database with the separate
+`recovery_owner`, `recovery_app`, and `recovery_worker` roles. The examples below use
+`recovery_test`, which satisfies the destructive-test safety guard; do not point them at a
+development or production database. The example host and port are placeholders, not required
+machine-specific values.
+
+First copy `.env.example` to an uncommitted `.env`, replace its password placeholders, install
+the project, and start the loopback-only service. Docker Compose reads `.env` for bootstrap
+passwords, but Alembic and the Python commands below read **exported shell variables**; merely
+creating `.env` does not configure those commands.
 
 ```bash
 python -m pip install -e ".[dev]"
 docker compose up -d postgres
-alembic upgrade head
 ```
 
-Use an explicit local development credential mapping in `.env` when invoking the demo. Its format is:
+Create a separate test database once, using the local bootstrap administrator. This grants the
+least privileges needed by the isolated roles to migrate and run tests.
 
-```text
-RECOVERY_DEVELOPMENT_MODE=true
-RECOVERY_DEV_CREDENTIALS={"local-token":{"org_id":"demo_org","actor_id":"demo_operator","role":"operator"}}
-RECOVERY_BENCHMARK_DATABASE=true
+```bash
+docker compose exec -T postgres psql -U recovery_admin -d recovery -c "CREATE DATABASE recovery_test"
+docker compose exec -T postgres psql -U recovery_admin -d recovery_test -c "GRANT CONNECT ON DATABASE recovery_test TO recovery_owner, recovery_app, recovery_worker; GRANT USAGE, CREATE ON SCHEMA public TO recovery_owner; GRANT USAGE ON SCHEMA public TO recovery_app, recovery_worker"
 ```
 
-Then run:
+Set these variables in the same shell that will run Alembic, tests, demo, or evaluation. Replace
+the password placeholders and host/port as appropriate for your isolated instance.
+
+```powershell
+$env:RECOVERY_DATABASE_URL = 'postgresql+psycopg://recovery_app:<app-password>@localhost:<port>/recovery_test'
+$env:RECOVERY_MIGRATION_DATABASE_URL = 'postgresql+psycopg://recovery_owner:<owner-password>@localhost:<port>/recovery_test'
+$env:RECOVERY_WORKER_DATABASE_URL = 'postgresql+psycopg://recovery_worker:<worker-password>@localhost:<port>/recovery_test'
+$env:TEST_RUNTIME_DATABASE_URL = $env:RECOVERY_DATABASE_URL
+$env:TEST_OWNER_DATABASE_URL = $env:RECOVERY_MIGRATION_DATABASE_URL
+$env:RECOVERY_REQUIRE_POSTGRES = 'true'
+$env:RECOVERY_BENCHMARK_DATABASE = 'true'
+$env:RECOVERY_DEVELOPMENT_MODE = 'true'
+$env:RECOVERY_DEV_CREDENTIALS = '{"local-token":{"org_id":"demo_org","actor_id":"demo_operator","role":"operator"}}'
+```
+
+```bash
+export RECOVERY_DATABASE_URL='postgresql+psycopg://recovery_app:<app-password>@localhost:<port>/recovery_test'
+export RECOVERY_MIGRATION_DATABASE_URL='postgresql+psycopg://recovery_owner:<owner-password>@localhost:<port>/recovery_test'
+export RECOVERY_WORKER_DATABASE_URL='postgresql+psycopg://recovery_worker:<worker-password>@localhost:<port>/recovery_test'
+export TEST_RUNTIME_DATABASE_URL="$RECOVERY_DATABASE_URL"
+export TEST_OWNER_DATABASE_URL="$RECOVERY_MIGRATION_DATABASE_URL"
+export RECOVERY_REQUIRE_POSTGRES=true
+export RECOVERY_BENCHMARK_DATABASE=true
+export RECOVERY_DEVELOPMENT_MODE=true
+export RECOVERY_DEV_CREDENTIALS='{"local-token":{"org_id":"demo_org","actor_id":"demo_operator","role":"operator"}}'
+```
+
+Run migrations with the owner URL, then execute the required PostgreSQL suite, the application-owned
+demo, and the authoritative evaluation:
 
 ```bash
 alembic upgrade head
-RECOVERY_REQUIRE_POSTGRES=true python -m pytest tests -q
+python -m pytest tests -q
 python -m recovery_manager demo
 python -m recovery_manager evaluate
 uvicorn recovery_manager.api:app --reload
